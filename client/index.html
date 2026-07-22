@@ -1,1 +1,423 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Project Neon</title>
+  <style>
+    body { margin:0; overflow:hidden; font-family:sans-serif; }
+    #menu, #lobby, #gameUI { position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none; }
+    .panel { background:rgba(0,0,0,0.8); color:#fff; padding:20px; border-radius:10px; position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); text-align:center; pointer-events:auto; }
+    button { margin:5px; padding:10px 20px; cursor:pointer; }
+    input { padding:8px; margin:5px; }
+    #crosshair { position:absolute; top:50%; left:50%; width:20px; height:20px; transform:translate(-50%,-50%); pointer-events:none; }
+    #crosshair::before, #crosshair::after { content:''; position:absolute; background:#0f0; }
+    #crosshair::before { width:2px; height:100%; left:50%; transform:translateX(-50%); }
+    #crosshair::after { height:2px; width:100%; top:50%; transform:translateY(-50%); }
+    #chatBox { position:absolute; bottom:50px; left:10px; width:300px; color:#fff; background:rgba(0,0,0,0.5); padding:5px; max-height:100px; overflow-y:auto; pointer-events:none; }
+    #chatInput { position:absolute; bottom:10px; left:10px; width:300px; pointer-events:auto; }
+    .hidden { display:none !important; }
+  </style>
+</head>
+<body>
+  <!-- UI слои -->
+  <div id="menu" class="panel">
+    <h2>Project Neon</h2>
+    <div id="authForms">
+      <input id="loginUsername" placeholder="Логин" /><br/>
+      <input id="loginPassword" type="password" placeholder="Пароль" /><br/>
+      <button onclick="login()">Войти</button>
+      <button onclick="register()">Регистрация</button>
+    </div>
+    <div id="userInfo" class="hidden">
+      <span id="displayName"></span> <button onclick="logout()">Выйти</button>
+    </div>
+    <div id="menuButtons" class="hidden">
+      <button onclick="showLobbies()">Играть</button>
+      <button onclick="alert('Редактор карт появится позже')" id="editorBtn" class="hidden">Редактор карт</button>
+    </div>
+  </div>
 
+  <div id="lobby" class="panel hidden">
+    <h3>Лобби</h3>
+    <div id="lobbyList"></div>
+    <button onclick="createLobby()">Создать лобби</button>
+    <button onclick="leaveLobby()">Назад</button>
+    <div id="currentLobby" class="hidden">
+      <h4>Игроки:</h4>
+      <ul id="playerList"></ul>
+      <button id="startBtn" onclick="startGame()">Начать игру</button>
+    </div>
+  </div>
+
+  <div id="gameUI" class="hidden">
+    <div id="crosshair"></div>
+    <div id="chatBox"></div>
+    <input id="chatInput" type="text" class="hidden" placeholder="Нажмите . для чата" />
+  </div>
+
+  <!-- Three.js canvas -->
+  <script type="importmap">
+    { "imports": { "three": "https://unpkg.com/three@0.128.0/build/three.module.js" } }
+  </script>
+  <script type="module">
+    import * as THREE from 'three';
+    // ---------- Константы ----------
+    const SERVER = 'ws://localhost:3000';
+    let token = localStorage.getItem('token');
+    let user = null;
+    let ws = null;
+    let lobbyId = null;
+    let gameState = 'menu'; // menu, lobby, game
+    let players = {}; // локальные данные о других игроках
+    let myPlayerId = null;
+    let myHealth = 100;
+
+    // Three.js переменные
+    let scene, camera, renderer, clock;
+    let remotePlayers = new Map(); // id -> mesh
+    let ground;
+
+    // Управление
+    const keyState = {};
+    let mouseX = 0, mouseY = 0;
+    let isPointerLocked = false;
+
+    // UI элементы
+    const menuDiv = document.getElementById('menu');
+    const lobbyDiv = document.getElementById('lobby');
+    const gameUI = document.getElementById('gameUI');
+    const authForms = document.getElementById('authForms');
+    const userInfo = document.getElementById('userInfo');
+    const menuButtons = document.getElementById('menuButtons');
+    const editorBtn = document.getElementById('editorBtn');
+    const chatBox = document.getElementById('chatBox');
+    const chatInput = document.getElementById('chatInput');
+
+    // ---------- Сетевые функции ----------
+    function connectWebSocket() {
+      if (ws) ws.close();
+      ws = new WebSocket(SERVER);
+      ws.onopen = () => {
+        if (token) ws.send(JSON.stringify({ type: 'auth', token }));
+      };
+      ws.onmessage = (e) => {
+        const msg = JSON.parse(e.data);
+        handleMessage(msg);
+      };
+      ws.onclose = () => {
+        if (gameState === 'game') exitGame();
+        setTimeout(connectWebSocket, 3000);
+      };
+    }
+
+    function handleMessage(msg) {
+      switch (msg.type) {
+        case 'auth_ok':
+          user = msg.user;
+          token = localStorage.getItem('token'); // уже есть
+          showMainMenu();
+          break;
+        case 'lobby_list':
+          renderLobbyList(msg.lobbies);
+          break;
+        case 'lobby_created':
+          lobbyId = msg.lobbyId;
+          joinLobbyUI();
+          break;
+        case 'lobby_update':
+          updateLobbyPlayers(msg.players);
+          break;
+        case 'game_start':
+          startGameClient(msg.players);
+          break;
+        case 'player_update':
+          updateRemotePlayer(msg.id, msg.position, msg.rotation);
+          break;
+        case 'shoot_event':
+          onShootEvent(msg);
+          break;
+        case 'chat':
+          addChatMessage(msg.from + ': ' + msg.text);
+          break;
+        case 'error':
+          alert(msg.text);
+          break;
+      }
+    }
+
+    function send(msg) { if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg)); }
+
+    // ---------- UI логика ----------
+    function login() {
+      const u = document.getElementById('loginUsername').value.trim();
+      const p = document.getElementById('loginPassword').value;
+      fetch('/api/login', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({username: u, password: p})
+      }).then(r=>r.json()).then(d=>{
+        if(d.token){ token=d.token; localStorage.setItem('token', token); user=d.user; connectWebSocket(); }
+        else alert(d.error);
+      });
+    }
+    function register() {
+      const u = document.getElementById('loginUsername').value.trim();
+      const p = document.getElementById('loginPassword').value;
+      fetch('/api/register', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({username: u, password: p})
+      }).then(r=>r.json()).then(d=>{
+        if(d.token){ token=d.token; localStorage.setItem('token', token); user=d.user; connectWebSocket(); }
+        else alert(d.error);
+      });
+    }
+    function logout() { token=null; localStorage.removeItem('token'); user=null; ws.close(); showLogin(); }
+    function showLogin() {
+      menuDiv.classList.remove('hidden'); lobbyDiv.classList.add('hidden'); gameUI.classList.add('hidden');
+      authForms.classList.remove('hidden'); userInfo.classList.add('hidden'); menuButtons.classList.add('hidden');
+    }
+    function showMainMenu() {
+      menuDiv.classList.remove('hidden'); lobbyDiv.classList.add('hidden'); gameUI.classList.add('hidden');
+      authForms.classList.add('hidden'); userInfo.classList.remove('hidden'); menuButtons.classList.remove('hidden');
+      document.getElementById('displayName').innerText = user.username + (user.is_neon ? ' ✔' : '');
+      if (user.is_neon) editorBtn.classList.remove('hidden'); else editorBtn.classList.add('hidden');
+    }
+    function showLobbies() {
+      menuDiv.classList.add('hidden'); lobbyDiv.classList.remove('hidden'); document.getElementById('currentLobby').classList.add('hidden');
+      send({ type: 'lobby_list' }); // запрос списка
+    }
+    function createLobby() { send({ type: 'create_lobby' }); }
+    function joinLobbyUI() {
+      document.getElementById('currentLobby').classList.remove('hidden');
+      document.getElementById('startBtn').style.display = (user && user.id === lobbyHost) ? 'inline' : 'none';
+    }
+    let lobbyHost = null;
+    function updateLobbyPlayers(plist) {
+      const ul = document.getElementById('playerList'); ul.innerHTML = '';
+      plist.forEach(p => { const li = document.createElement('li'); li.textContent = p.username; ul.appendChild(li); });
+      lobbyHost = plist[0]?.id;
+      document.getElementById('startBtn').style.display = (user && lobbyHost === user.id) ? 'inline' : 'none';
+    }
+    function startGame() { send({ type: 'start_game' }); }
+    function leaveLobby() { send({ type: 'leave_lobby' }); lobbyId=null; showLobbies(); }
+    function renderLobbyList(list) {
+      const div = document.getElementById('lobbyList'); div.innerHTML = '';
+      list.forEach(l => {
+        const btn = document.createElement('button');
+        btn.textContent = `${l.host} (${l.players}/?) [${l.id}]`;
+        btn.onclick = () => { send({ type: 'join_lobby', lobbyId: l.id }); };
+        div.appendChild(btn);
+      });
+    }
+
+    // ---------- Игровая 3D часть ----------
+    function startGameClient(playersData) {
+      gameState = 'game';
+      menuDiv.classList.add('hidden'); lobbyDiv.classList.add('hidden'); gameUI.classList.remove('hidden');
+      chatInput.classList.add('hidden');
+      initThreeJS();
+      // Создаём игроков
+      playersData.forEach(p => {
+        if (p.id === user.id) {
+          myPlayerId = p.id;
+          myHealth = p.health;
+          camera.position.set(p.position.x, p.position.y, p.position.z);
+        } else {
+          addRemotePlayer(p.id, p.position, p.rotation);
+        }
+      });
+      document.body.requestPointerLock();
+    }
+
+    function initThreeJS() {
+      scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x87ceeb);
+      camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
+      renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      document.body.appendChild(renderer.domElement);
+      clock = new THREE.Clock();
+
+      // Пол
+      const groundGeo = new THREE.PlaneGeometry(50, 50);
+      const groundMat = new THREE.MeshLambertMaterial({ color: 0x228b22 });
+      ground = new THREE.Mesh(groundGeo, groundMat);
+      ground.rotation.x = -Math.PI/2;
+      scene.add(ground);
+      // Стены
+      const wallMat = new THREE.MeshLambertMaterial({ color: 0x888888 });
+      [[25,2,0,1,4,50], [-25,2,0,1,4,50], [0,2,25,50,4,1], [0,2,-25,50,4,1]].forEach(([x,y,z,w,h,d]) => {
+        const wall = new THREE.Mesh(new THREE.BoxGeometry(w,h,d), wallMat);
+        wall.position.set(x,y,z);
+        scene.add(wall);
+      });
+      // Свет
+      scene.add(new THREE.AmbientLight(0x404040));
+      const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+      dirLight.position.set(10, 20, 5);
+      scene.add(dirLight);
+
+      window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth/window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      });
+    }
+
+    function addRemotePlayer(id, pos, rot) {
+      const geometry = new THREE.BoxGeometry(1, 2, 1);
+      const material = new THREE.MeshLambertMaterial({ color: 0xff0000 });
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.position.set(pos.x, pos.y, pos.z);
+      scene.add(mesh);
+      remotePlayers.set(id, mesh);
+    }
+
+    function updateRemotePlayer(id, pos, rot) {
+      const mesh = remotePlayers.get(id);
+      if (mesh) {
+        mesh.position.set(pos.x, pos.y, pos.z);
+        // rot можно использовать для поворота модели
+      }
+    }
+
+    function onShootEvent(msg) {
+      if (msg.targetId === myPlayerId) {
+        myHealth = msg.targetHealth;
+        if (myHealth <= 0) alert('Вы погибли!'); // простейшая смерть
+      }
+      // Эффект выстрела можно добавить
+    }
+
+    function exitGame() {
+      gameState = 'menu';
+      document.exitPointerLock();
+      renderer.domElement.remove();
+      scene = null;
+      remotePlayers.clear();
+      showMainMenu();
+    }
+
+    // ---------- Игровой цикл ----------
+    let lastInputSend = 0;
+    function gameLoop() {
+      requestAnimationFrame(gameLoop);
+      if (gameState !== 'game') return;
+      const dt = clock.getDelta();
+      handleMovement(dt);
+      renderer.render(scene, camera);
+
+      // Отправка ввода серверу 30 раз в секунду
+      const now = performance.now();
+      if (now - lastInputSend > 33) {
+        send({
+          type: 'player_input',
+          position: { x: camera.position.x, y: camera.position.y, z: camera.position.z },
+          rotation: { yaw: camera.rotation.y },
+          keys: keyState
+        });
+        lastInputSend = now;
+      }
+    }
+
+    function handleMovement(dt) {
+      if (!isPointerLocked) return;
+      const speed = (keyState['KeyC'] ? 2 : 5) * dt;
+      const dir = new THREE.Vector3();
+      if (keyState['KeyW']) dir.z -= 1;
+      if (keyState['KeyS']) dir.z += 1;
+      if (keyState['KeyA']) dir.x -= 1;
+      if (keyState['KeyD']) dir.x += 1;
+      if (keyState['Space'] || keyState['KeyQ']) dir.y += 1; // прыжок (упрощённо)
+      dir.normalize().multiplyScalar(speed);
+      camera.position.add(dir);
+      // Простейшая гравитация
+      if (camera.position.y > 1) camera.position.y -= 9.8 * dt;
+      else camera.position.y = 1;
+    }
+
+    // ---------- Обработчики ввода ----------
+    document.addEventListener('keydown', (e) => {
+      keyState[e.code] = true;
+      if (e.code === 'KeyC') { /* приседание */ }
+      if (e.code === 'KeyE') { /* перезарядка */ }
+      if (e.code === 'KeyL') { if (confirm('Сдаться?')) exitGame(); }
+      if (e.code === 'KeyZ') { alert('Меню настроек'); } // заглушка
+      if (e.code === 'KeyX') { alert('Консоль'); }
+      if (e.code === 'Period') { // чат
+        if (gameState === 'game') {
+          chatInput.classList.toggle('hidden');
+          if (!chatInput.classList.contains('hidden')) chatInput.focus();
+        }
+      }
+      // Быстрый чат V + ...
+      if (e.code === 'KeyV') {
+        // ждём следующую клавишу (упростим)
+        const quickHandler = (ev) => {
+          if (ev.code === 'KeyT') send({ type:'chat', text:'Hello' });
+          else if (ev.code === 'KeyY') send({ type:'chat', text:'Run' });
+          else if (ev.code === 'KeyU') send({ type:'chat', text:'Help me' });
+          else if (ev.code === 'KeyF') send({ type:'chat', text:'Planting' });
+          else if (ev.code === 'KeyG') send({ type:'chat', text:'Defusing' });
+          else if (ev.code === 'KeyH') send({ type:'chat', text:'Sorry' });
+          document.removeEventListener('keydown', quickHandler);
+        };
+        document.addEventListener('keydown', quickHandler, { once: false });
+      }
+    });
+    document.addEventListener('keyup', (e) => { keyState[e.code] = false; });
+
+    document.addEventListener('mousemove', (e) => {
+      if (isPointerLocked) {
+        camera.rotation.y -= e.movementX * 0.002;
+        camera.rotation.x -= e.movementY * 0.002;
+        camera.rotation.x = Math.max(-Math.PI/2, Math.min(Math.PI/2, camera.rotation.x));
+      }
+    });
+
+    document.addEventListener('click', () => {
+      if (gameState === 'game' && isPointerLocked) {
+        // Стрельба – простой рейкаст
+        const raycaster = new THREE.Raycaster();
+        raycaster.setFromCamera(new THREE.Vector2(0,0), camera);
+        // Проверяем попадание в других игроков
+        let hitPlayerId = null;
+        remotePlayers.forEach((mesh, id) => {
+          const intersects = raycaster.intersectObject(mesh);
+          if (intersects.length > 0) hitPlayerId = id;
+        });
+        if (hitPlayerId) {
+          send({ type: 'shoot', targetId: hitPlayerId });
+        } else {
+          // выстрел в пустоту (можно звук)
+        }
+      }
+    });
+
+    document.addEventListener('pointerlockchange', () => {
+      isPointerLocked = document.pointerLockElement !== null;
+    });
+
+    chatInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        send({ type:'chat', text: chatInput.value });
+        chatInput.value = '';
+        chatInput.classList.add('hidden');
+      }
+    });
+
+    function addChatMessage(text) {
+      const div = document.createElement('div'); div.textContent = text;
+      chatBox.appendChild(div);
+      chatBox.scrollTop = chatBox.scrollHeight;
+    }
+
+    // Запуск
+    if (token) {
+      connectWebSocket();
+    } else {
+      showLogin();
+    }
+    gameLoop();
+  </script>
+</body>
+</html>
