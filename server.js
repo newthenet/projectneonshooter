@@ -13,7 +13,7 @@ const wss = new WebSocket.Server({ server });
 
 const db = new Database('neon.db');
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-123';
-const NEON_PASSWORD = 'pnshooter888Qcod5'; // только на сервере!
+const NEON_PASSWORD = process.env.NEON_PASSWORD || 'pnshooter888Qcod5'; // продакшен передавать через env
 const NEON_HASH = bcrypt.hashSync(NEON_PASSWORD, 10);
 
 // Инициализация БД
@@ -33,13 +33,15 @@ db.exec(`
   );
 `);
 
-// Создаём аккаунт Neon, если его нет
+// Создаём аккаунт Neon, если нет
 if (!db.prepare('SELECT id FROM users WHERE is_neon = 1').get()) {
   db.prepare('INSERT INTO users (username, password, is_neon) VALUES (?, ?, 1)')
     .run('Neon', NEON_HASH);
 }
 
+// Middleware
 app.use(express.json());
+app.use(express.static('client')); // раздача статики
 
 // JWT middleware
 function auth(req, res, next) {
@@ -52,7 +54,7 @@ function auth(req, res, next) {
   } catch { res.status(401).json({ error: 'Invalid token' }); }
 }
 
-// Регистрация
+// === REST API ===
 app.post('/api/register', (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) return res.status(400).json({ error: 'Fields required' });
@@ -64,7 +66,6 @@ app.post('/api/register', (req, res) => {
   } catch { res.status(409).json({ error: 'Username exists' }); }
 });
 
-// Вход
 app.post('/api/login', (req, res) => {
   const { username, password } = req.body;
   const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
@@ -74,7 +75,6 @@ app.post('/api/login', (req, res) => {
   res.json({ token, user: { id: user.id, username: user.username, is_neon: !!user.is_neon } });
 });
 
-// Карты (загрузка и список)
 app.post('/api/maps', auth, (req, res) => {
   if (!req.user.is_neon) return res.status(403).json({ error: 'Neon only' });
   const { name, data } = req.body;
@@ -94,8 +94,14 @@ app.get('/api/maps/:id', auth, (req, res) => {
   res.json({ ...map, data: JSON.parse(map.data) });
 });
 
-// ======= WebSocket часть (логика лобби и игры) =======
+// Все остальные GET запросы -> отдаём index.html (для SPA)
+app.get('*', (req, res) => {
+  res.sendFile(__dirname + '/client/index.html');
+});
+
+// === WebSocket ===
 const clients = new Map(); // ws -> { user, lobbyId, playerId }
+const lobbies = new Map();
 
 wss.on('connection', (ws) => {
   ws.on('message', (raw) => {
@@ -122,7 +128,7 @@ wss.on('connection', (ws) => {
           id: lobbyId,
           host: client.user.id,
           players: [{ id: client.user.id, username: client.user.username, ws }],
-          state: 'waiting', // waiting, playing
+          state: 'waiting',
         };
         lobbies.set(lobbyId, lobby);
         client.lobbyId = lobbyId;
@@ -142,7 +148,6 @@ wss.on('connection', (ws) => {
         lobby.players.push({ id: client.user.id, username: client.user.username, ws });
         client.lobbyId = lobby.id;
         client.playerId = client.user.id;
-        // Уведомляем всех в лобби
         lobby.players.forEach(p => p.ws.send(JSON.stringify({
           type: 'lobby_update',
           players: lobby.players.map(p => ({ id: p.id, username: p.username }))
@@ -156,7 +161,6 @@ wss.on('connection', (ws) => {
         const lobby = lobbies.get(client.lobbyId);
         if (!lobby || lobby.host !== client.user.id || lobby.players.length < 2) return;
         lobby.state = 'playing';
-        // Генерируем начальные позиции (простая карта)
         const spawns = [
           { x: 0, y: 1, z: 5 },
           { x: 0, y: 1, z: -5 },
@@ -166,7 +170,6 @@ wss.on('connection', (ws) => {
           p.health = 100;
           p.rotation = { yaw: 0 };
         });
-        // Рассылаем старт игры
         lobby.players.forEach(p => p.ws.send(JSON.stringify({
           type: 'game_start',
           players: lobby.players.map(pl => ({
@@ -186,12 +189,14 @@ wss.on('connection', (ws) => {
         if (!lobby || lobby.state !== 'playing') return;
         const player = lobby.players.find(p => p.id === client.user.id);
         if (!player) return;
-        // Обновляем состояние игрока на сервере (пока доверяем клиенту)
         if (msg.position) player.position = msg.position;
         if (msg.rotation) player.rotation = msg.rotation;
-        if (msg.keys) player.keys = msg.keys; // не обязательно
-        // Рассылаем всем, кроме отправителя
-        const update = { type: 'player_update', id: player.id, position: player.position, rotation: player.rotation };
+        const update = {
+          type: 'player_update',
+          id: player.id,
+          position: player.position,
+          rotation: player.rotation,
+        };
         lobby.players.forEach(p => { if (p.ws !== ws) p.ws.send(JSON.stringify(update)); });
         break;
       }
@@ -202,14 +207,12 @@ wss.on('connection', (ws) => {
         if (!lobby || lobby.state !== 'playing') return;
         const shooter = lobby.players.find(p => p.id === client.user.id);
         if (!shooter) return;
-        // Клиент сообщает, в кого попал (упрощённо)
         const targetId = msg.targetId;
         const target = lobby.players.find(p => p.id === targetId);
         if (target) {
-          target.health -= 25; // урон
-          if (target.health <= 0) target.health = 0; // смерть (пока без респавна)
+          target.health -= 25;
+          if (target.health <= 0) target.health = 0;
         }
-        // Рассылаем событие выстрела и урона
         lobby.players.forEach(p => p.ws.send(JSON.stringify({
           type: 'shoot_event',
           shooterId: shooter.id,
@@ -244,23 +247,18 @@ wss.on('connection', (ws) => {
   });
 });
 
-const lobbies = new Map();
-
 function leaveLobby(ws) {
   const client = clients.get(ws);
   if (!client || !client.lobbyId) return;
   const lobby = lobbies.get(client.lobbyId);
   if (!lobby) return;
-  // Удаляем игрока
   lobby.players = lobby.players.filter(p => p.ws !== ws);
   if (lobby.players.length === 0) {
     lobbies.delete(client.lobbyId);
   } else {
-    // Если хост вышел, назначаем нового
     if (lobby.host === client.user.id && lobby.players.length > 0) {
       lobby.host = lobby.players[0].id;
     }
-    // Уведомляем оставшихся
     lobby.players.forEach(p => p.ws.send(JSON.stringify({
       type: 'lobby_update',
       players: lobby.players.map(p => ({ id: p.id, username: p.username }))
@@ -278,7 +276,7 @@ function broadcastLobbyList() {
     }
   }
   for (let [ws, client] of clients) {
-    if (client.user && !client.lobbyId) { // только тем, кто не в лобби
+    if (client.user && !client.lobbyId) {
       ws.send(JSON.stringify({ type: 'lobby_list', lobbies: list }));
     }
   }
@@ -294,4 +292,6 @@ function sendLobbyList(ws) {
   ws.send(JSON.stringify({ type: 'lobby_list', lobbies: list }));
 }
 
-server.listen(process.env.PORT || 3000, () => console.log('Server running'));
+server.listen(process.env.PORT || 3000, () => {
+  console.log('Project Neon server running on port ' + (process.env.PORT || 3000));
+});
