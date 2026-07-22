@@ -7,21 +7,27 @@ const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
 const initSqlJs = require('sql.js');
 const fs = require('fs');
+const path = require('path');
 
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
+
+// Используем персистентную папку, если доступна (Render Disk)
+const DB_PATH = process.env.RENDER ? '/data/neon.db' : 'neon.db';
 
 let db;
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-123';
 const NEON_PASSWORD = process.env.NEON_PASSWORD || 'pnshooter888Qcod5';
 const NEON_HASH = bcrypt.hashSync(NEON_PASSWORD, 10);
 
-// Инициализация БД
+// Инициализация базы данных
 async function initDatabase() {
   const SQL = await initSqlJs();
-  if (fs.existsSync('neon.db')) {
-    const buffer = fs.readFileSync('neon.db');
+  const dir = path.dirname(DB_PATH);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  if (fs.existsSync(DB_PATH)) {
+    const buffer = fs.readFileSync(DB_PATH);
     db = new SQL.Database(buffer);
   } else {
     db = new SQL.Database();
@@ -50,14 +56,19 @@ async function initDatabase() {
 function saveDatabase() {
   const data = db.export();
   const buffer = Buffer.from(data);
-  fs.writeFileSync('neon.db', buffer);
+  fs.writeFileSync(DB_PATH, buffer);
 }
 
 function dbGet(sql, params = []) {
   const stmt = db.prepare(sql);
   if (params.length > 0) stmt.bind(params);
-  if (stmt.step()) { const row = stmt.getAsObject(); stmt.free(); return row; }
-  stmt.free(); return undefined;
+  if (stmt.step()) {
+    const row = stmt.getAsObject();
+    stmt.free();
+    return row;
+  }
+  stmt.free();
+  return undefined;
 }
 
 function dbAll(sql, params = []) {
@@ -65,7 +76,8 @@ function dbAll(sql, params = []) {
   if (params.length > 0) stmt.bind(params);
   const rows = [];
   while (stmt.step()) rows.push(stmt.getAsObject());
-  stmt.free(); return rows;
+  stmt.free();
+  return rows;
 }
 
 function dbRun(sql, params = []) {
@@ -73,6 +85,7 @@ function dbRun(sql, params = []) {
   saveDatabase();
 }
 
+// Создаём аккаунт Neon
 async function createNeonAccount() {
   if (!dbGet('SELECT id FROM users WHERE is_neon = 1')) {
     dbRun('INSERT INTO users (username, password, is_neon, wins) VALUES (?, ?, 1, 0)', ['Neon', NEON_HASH]);
@@ -82,6 +95,7 @@ async function createNeonAccount() {
 app.use(express.json());
 app.use(express.static('client'));
 
+// JWT middleware
 function auth(req, res, next) {
   const token = req.headers.authorization?.split(' ')[1];
   if (!token) return res.status(401).json({ error: 'No token' });
@@ -93,7 +107,7 @@ function auth(req, res, next) {
   } catch { res.status(401).json({ error: 'Invalid token' }); }
 }
 
-// API (без изменений, только добавлен лидерборд)
+// === REST API ===
 app.post('/api/register', (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) return res.status(400).json({ error: 'Fields required' });
@@ -108,7 +122,8 @@ app.post('/api/register', (req, res) => {
 app.post('/api/login', (req, res) => {
   const { username, password } = req.body;
   const user = dbGet('SELECT * FROM users WHERE username = ?', [username]);
-  if (!user || !bcrypt.compareSync(password, user.password)) return res.status(401).json({ error: 'Bad credentials' });
+  if (!user || !bcrypt.compareSync(password, user.password))
+    return res.status(401).json({ error: 'Bad credentials' });
   const token = jwt.sign({ id: user.id }, JWT_SECRET);
   res.json({ token, user: { id: user.id, username: user.username, is_neon: !!user.is_neon } });
 });
@@ -142,7 +157,7 @@ app.post('/api/win', auth, (req, res) => {
 
 app.get('*', (req, res) => res.sendFile(__dirname + '/client/index.html'));
 
-// WebSocket – сигнальный сервер и лобби
+// ==================== WebSocket ====================
 const clients = new Map();
 const lobbies = new Map();
 
@@ -166,7 +181,7 @@ wss.on('connection', (ws) => {
       case 'create_lobby': {
         const client = clients.get(ws);
         if (!client) return;
-        // Проверка: один юзер — одно активное лобби
+        // Проверка: у этого пользователя уже есть активное лобби?
         for (const [id, lobby] of lobbies) {
           if (lobby.host === client.user.id && lobby.state !== 'finished') {
             ws.send(JSON.stringify({ type: 'error', text: 'У вас уже есть активное лобби' }));
@@ -184,7 +199,12 @@ wss.on('connection', (ws) => {
         lobbies.set(lobbyId, lobby);
         client.lobbyId = lobbyId;
         client.peerId = client.user.id;
+        // Сразу отправляем создателю ID лобби и список игроков
         ws.send(JSON.stringify({ type: 'lobby_created', lobbyId }));
+        ws.send(JSON.stringify({
+          type: 'lobby_update',
+          players: lobby.players.map(p => ({ id: p.id, username: p.username }))
+        }));
         broadcastLobbyList();
         break;
       }
@@ -196,7 +216,7 @@ wss.on('connection', (ws) => {
           ws.send(JSON.stringify({ type: 'error', text: 'Лобби недоступно' }));
           return;
         }
-        if (lobby.players.length >= 10) { // ограничим 10 игроков
+        if (lobby.players.length >= 10) {
           ws.send(JSON.stringify({ type: 'error', text: 'Лобби заполнено' }));
           return;
         }
@@ -215,7 +235,7 @@ wss.on('connection', (ws) => {
         if (!client || !client.lobbyId) return;
         const lobby = lobbies.get(client.lobbyId);
         if (!lobby || lobby.host !== client.user.id) return;
-        lobby.mapData = msg.mapData; // хост выбирает карту
+        lobby.mapData = msg.mapData;
         break;
       }
       case 'start_game': {
@@ -224,23 +244,22 @@ wss.on('connection', (ws) => {
         const lobby = lobbies.get(client.lobbyId);
         if (!lobby || lobby.host !== client.user.id || lobby.players.length < 2) return;
         lobby.state = 'starting';
-        // Рассылаем всем старт через 5 секунд
+        // 5 секунд до старта
+        lobby.players.forEach(p => p.ws.send(JSON.stringify({ type: 'game_starting', delay: 5 })));
         setTimeout(() => {
           if (lobby.state !== 'starting') return;
           lobby.state = 'playing';
           lobby.round = 1;
           lobby.players.forEach((p, i) => {
-            p.team = i % 2 === 0 ? 't' : 'ct'; // чередуем команды
+            p.team = i % 2 === 0 ? 't' : 'ct';
           });
           lobby.players.forEach(p => p.ws.send(JSON.stringify({
             type: 'game_started',
             players: lobby.players.map(p => ({ id: p.id, username: p.username, team: p.team })),
             mapData: lobby.mapData
           })));
+          broadcastLobbyList();
         }, 5000);
-        // Сразу сообщаем, что игра начинается (отсчёт)
-        lobby.players.forEach(p => p.ws.send(JSON.stringify({ type: 'game_starting', delay: 5 })));
-        broadcastLobbyList();
         break;
       }
       case 'signal': {
@@ -286,7 +305,7 @@ wss.on('connection', (ws) => {
         if (msg.winnerTeam) {
           lobby.players.forEach(p => {
             if (p.team === msg.winnerTeam) {
-              // Обновляем wins в БД (через REST или здесь? Сделаем через API)
+              dbRun('UPDATE users SET wins = wins + 1 WHERE id = ?', [p.id]);
             }
           });
         }
@@ -303,8 +322,9 @@ wss.on('connection', (ws) => {
       const lobby = lobbies.get(client.lobbyId);
       if (lobby) {
         lobby.players = lobby.players.filter(p => p.ws !== ws);
-        if (lobby.players.length === 0) lobbies.delete(client.lobbyId);
-        else {
+        if (lobby.players.length === 0) {
+          lobbies.delete(client.lobbyId);
+        } else {
           if (lobby.host === client.user.id) lobby.host = lobby.players[0].id;
           lobby.players.forEach(p => p.ws.send(JSON.stringify({
             type: 'lobby_update',
@@ -341,7 +361,13 @@ function sendLobbyList(ws) {
   ws.send(JSON.stringify({ type: 'lobby_list', lobbies: list }));
 }
 
+// Периодическая рассылка списка лобби каждые 3 секунды
+setInterval(() => {
+  broadcastLobbyList();
+}, 3000);
+
+// Запуск сервера
 initDatabase().then(() => {
   createNeonAccount();
-  server.listen(process.env.PORT || 3000, () => console.log('Server running'));
+  server.listen(process.env.PORT || 3000, () => console.log('Project Neon server running'));
 });
