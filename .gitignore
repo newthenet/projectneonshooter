@@ -1,0 +1,4 @@
+node_modules/
+neon.db
+.env
+*.log
