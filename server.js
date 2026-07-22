@@ -13,8 +13,8 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-// Используем персистентную папку, если доступна (Render Disk)
-const DB_PATH = process.env.RENDER ? '/data/neon.db' : 'neon.db';
+// База данных будет лежать в текущей папке проекта
+const DB_PATH = path.join(__dirname, 'neon.db');
 
 let db;
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-123';
@@ -24,8 +24,6 @@ const NEON_HASH = bcrypt.hashSync(NEON_PASSWORD, 10);
 // Инициализация базы данных
 async function initDatabase() {
   const SQL = await initSqlJs();
-  const dir = path.dirname(DB_PATH);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   if (fs.existsSync(DB_PATH)) {
     const buffer = fs.readFileSync(DB_PATH);
     db = new SQL.Database(buffer);
@@ -181,7 +179,6 @@ wss.on('connection', (ws) => {
       case 'create_lobby': {
         const client = clients.get(ws);
         if (!client) return;
-        // Проверка: у этого пользователя уже есть активное лобби?
         for (const [id, lobby] of lobbies) {
           if (lobby.host === client.user.id && lobby.state !== 'finished') {
             ws.send(JSON.stringify({ type: 'error', text: 'У вас уже есть активное лобби' }));
@@ -199,7 +196,6 @@ wss.on('connection', (ws) => {
         lobbies.set(lobbyId, lobby);
         client.lobbyId = lobbyId;
         client.peerId = client.user.id;
-        // Сразу отправляем создателю ID лобби и список игроков
         ws.send(JSON.stringify({ type: 'lobby_created', lobbyId }));
         ws.send(JSON.stringify({
           type: 'lobby_update',
@@ -244,7 +240,6 @@ wss.on('connection', (ws) => {
         const lobby = lobbies.get(client.lobbyId);
         if (!lobby || lobby.host !== client.user.id || lobby.players.length < 2) return;
         lobby.state = 'starting';
-        // 5 секунд до старта
         lobby.players.forEach(p => p.ws.send(JSON.stringify({ type: 'game_starting', delay: 5 })));
         setTimeout(() => {
           if (lobby.state !== 'starting') return;
@@ -301,7 +296,6 @@ wss.on('connection', (ws) => {
         if (!client || !client.lobbyId) return;
         const lobby = lobbies.get(client.lobbyId);
         if (!lobby) return;
-        // Увеличиваем победы команде
         if (msg.winnerTeam) {
           lobby.players.forEach(p => {
             if (p.team === msg.winnerTeam) {
@@ -361,12 +355,10 @@ function sendLobbyList(ws) {
   ws.send(JSON.stringify({ type: 'lobby_list', lobbies: list }));
 }
 
-// Периодическая рассылка списка лобби каждые 3 секунды
 setInterval(() => {
   broadcastLobbyList();
 }, 3000);
 
-// Запуск сервера
 initDatabase().then(() => {
   createNeonAccount();
   server.listen(process.env.PORT || 3000, () => console.log('Project Neon server running'));
