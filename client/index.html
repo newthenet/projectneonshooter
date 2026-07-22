@@ -55,16 +55,12 @@
     <input id="chatInput" type="text" class="hidden" placeholder="Нажмите . для чата" />
   </div>
 
-  <!-- Three.js -->
-  <script type="importmap">
-    { "imports": { "three": "https://unpkg.com/three@0.128.0/build/three.module.js" } }
-  </script>
-  <script type="module">
-    import * as THREE from 'three';
-
-    // Автоматический WebSocket URL: wss://текущий_домен
+  <!-- Three.js (обычный скрипт, не модуль) -->
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+  
+  <script>
+    // Автоматический WebSocket URL
     const SERVER = location.origin.replace(/^http/, 'ws');
-
     let token = localStorage.getItem('token');
     let user = null;
     let ws = null;
@@ -74,7 +70,7 @@
     let myPlayerId = null;
     let myHealth = 100;
 
-    // Three.js
+    // Three.js переменные
     let scene, camera, renderer, clock;
     let remotePlayers = new Map();
     let ground;
@@ -82,7 +78,7 @@
     const keyState = {};
     let isPointerLocked = false;
 
-    // UI
+    // UI элементы
     const menuDiv = document.getElementById('menu');
     const lobbyDiv = document.getElementById('lobby');
     const gameUI = document.getElementById('gameUI');
