@@ -12,12 +12,11 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-let db; // будет инициализирована асинхронно
+let db;
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-123';
 const NEON_PASSWORD = process.env.NEON_PASSWORD || 'pnshooter888Qcod5';
 const NEON_HASH = bcrypt.hashSync(NEON_PASSWORD, 10);
 
-// Загрузка/создание БД
 async function initDatabase() {
   const SQL = await initSqlJs();
   if (fs.existsSync('neon.db')) {
@@ -52,7 +51,6 @@ function saveDatabase() {
   fs.writeFileSync('neon.db', buffer);
 }
 
-// Вспомогательные функции для работы с sql.js (аналоги better-sqlite3)
 function dbGet(sql, params = []) {
   const stmt = db.prepare(sql);
   if (params.length > 0) stmt.bind(params);
@@ -69,9 +67,7 @@ function dbAll(sql, params = []) {
   const stmt = db.prepare(sql);
   if (params.length > 0) stmt.bind(params);
   const rows = [];
-  while (stmt.step()) {
-    rows.push(stmt.getAsObject());
-  }
+  while (stmt.step()) rows.push(stmt.getAsObject());
   stmt.free();
   return rows;
 }
@@ -81,19 +77,15 @@ function dbRun(sql, params = []) {
   saveDatabase();
 }
 
-// Создаём аккаунт Neon, если нет
 async function createNeonAccount() {
-  const neon = dbGet('SELECT id FROM users WHERE is_neon = 1');
-  if (!neon) {
+  if (!dbGet('SELECT id FROM users WHERE is_neon = 1')) {
     dbRun('INSERT INTO users (username, password, is_neon) VALUES (?, ?, 1)', ['Neon', NEON_HASH]);
   }
 }
 
-// Middleware
 app.use(express.json());
 app.use(express.static('client'));
 
-// JWT middleware
 function auth(req, res, next) {
   const token = req.headers.authorization?.split(' ')[1];
   if (!token) return res.status(401).json({ error: 'No token' });
@@ -102,17 +94,13 @@ function auth(req, res, next) {
     req.user = dbGet('SELECT * FROM users WHERE id = ?', [dec.id]);
     if (!req.user) return res.status(401).json({ error: 'User not found' });
     next();
-  } catch {
-    res.status(401).json({ error: 'Invalid token' });
-  }
+  } catch { res.status(401).json({ error: 'Invalid token' }); }
 }
 
-// === REST API ===
 app.post('/api/register', (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) return res.status(400).json({ error: 'Fields required' });
-  const existing = dbGet('SELECT id FROM users WHERE username = ?', [username]);
-  if (existing) return res.status(409).json({ error: 'Username exists' });
+  if (dbGet('SELECT id FROM users WHERE username = ?', [username])) return res.status(409).json({ error: 'Username exists' });
   const hash = bcrypt.hashSync(password, 10);
   dbRun('INSERT INTO users (username, password) VALUES (?, ?)', [username, hash]);
   const newUser = dbGet('SELECT * FROM users WHERE username = ?', [username]);
@@ -137,8 +125,7 @@ app.post('/api/maps', auth, (req, res) => {
 });
 
 app.get('/api/maps', auth, (req, res) => {
-  const maps = dbAll('SELECT id, name, author_id, created_at FROM maps');
-  res.json(maps);
+  res.json(dbAll('SELECT id, name, author_id, created_at FROM maps'));
 });
 
 app.get('/api/maps/:id', auth, (req, res) => {
@@ -148,13 +135,10 @@ app.get('/api/maps/:id', auth, (req, res) => {
   res.json(map);
 });
 
-// Все остальные GET запросы -> отдаём index.html
-app.get('*', (req, res) => {
-  res.sendFile(__dirname + '/client/index.html');
-});
+app.get('*', (req, res) => res.sendFile(__dirname + '/client/index.html'));
 
-// === WebSocket ===
-const clients = new Map(); // ws -> { user, lobbyId, playerId }
+// WebSocket
+const clients = new Map();
 const lobbies = new Map();
 
 wss.on('connection', (ws) => {
@@ -181,13 +165,17 @@ wss.on('connection', (ws) => {
         const lobby = {
           id: lobbyId,
           host: client.user.id,
-          players: [{ id: client.user.id, username: client.user.username, ws }],
+          players: [{ id: client.user.id, username: client.user.username, ws, health: 100 }],
           state: 'waiting',
         };
         lobbies.set(lobbyId, lobby);
         client.lobbyId = lobbyId;
         client.playerId = client.user.id;
         ws.send(JSON.stringify({ type: 'lobby_created', lobbyId }));
+        ws.send(JSON.stringify({
+          type: 'lobby_update',
+          players: lobby.players.map(p => ({ id: p.id, username: p.username }))
+        }));
         broadcastLobbyList();
         break;
       }
@@ -199,7 +187,7 @@ wss.on('connection', (ws) => {
           ws.send(JSON.stringify({ type: 'error', text: 'Lobby unavailable' }));
           return;
         }
-        lobby.players.push({ id: client.user.id, username: client.user.username, ws });
+        lobby.players.push({ id: client.user.id, username: client.user.username, ws, health: 100 });
         client.lobbyId = lobby.id;
         client.playerId = client.user.id;
         lobby.players.forEach(p => p.ws.send(JSON.stringify({
@@ -218,10 +206,11 @@ wss.on('connection', (ws) => {
         const spawns = [
           { x: 0, y: 1, z: 5 },
           { x: 0, y: 1, z: -5 },
+          { x: 5, y: 1, z: 0 },
+          { x: -5, y: 1, z: 0 },
         ];
         lobby.players.forEach((p, i) => {
           p.position = { ...spawns[i % spawns.length] };
-          p.health = 100;
           p.rotation = { yaw: 0 };
         });
         lobby.players.forEach(p => p.ws.send(JSON.stringify({
@@ -230,8 +219,8 @@ wss.on('connection', (ws) => {
             id: pl.id,
             username: pl.username,
             position: pl.position,
-            health: pl.health,
             rotation: pl.rotation,
+            health: pl.health,
           }))
         })));
         break;
@@ -250,6 +239,7 @@ wss.on('connection', (ws) => {
           id: player.id,
           position: player.position,
           rotation: player.rotation,
+          health: player.health,
         };
         lobby.players.forEach(p => { if (p.ws !== ws) p.ws.send(JSON.stringify(update)); });
         break;
@@ -263,15 +253,32 @@ wss.on('connection', (ws) => {
         if (!shooter) return;
         const targetId = msg.targetId;
         const target = lobby.players.find(p => p.id === targetId);
+        let damage = 0;
         if (target) {
           target.health -= 25;
-          if (target.health <= 0) target.health = 0;
+          damage = 25;
+          if (target.health <= 0) {
+            target.health = 0;
+            // респавн через 3 секунды
+            setTimeout(() => {
+              if (lobby.players.includes(target)) {
+                target.health = 100;
+                target.position = { x: 0, y: 1, z: 5 }; // респавн на точке Т
+                lobby.players.forEach(p => p.ws.send(JSON.stringify({
+                  type: 'player_respawn',
+                  id: target.id,
+                  position: target.position,
+                  health: target.health,
+                })));
+              }
+            }, 3000);
+          }
         }
         lobby.players.forEach(p => p.ws.send(JSON.stringify({
           type: 'shoot_event',
           shooterId: shooter.id,
           targetId: targetId,
-          damage: 25,
+          damage: damage,
           targetHealth: target ? target.health : undefined,
         })));
         break;
@@ -346,13 +353,7 @@ function sendLobbyList(ws) {
   ws.send(JSON.stringify({ type: 'lobby_list', lobbies: list }));
 }
 
-// Запуск сервера после инициализации БД
 initDatabase().then(() => {
   createNeonAccount();
-  server.listen(process.env.PORT || 3000, () => {
-    console.log('Project Neon server running on port ' + (process.env.PORT || 3000));
-  });
-}).catch(err => {
-  console.error('Failed to initialize database:', err);
-  process.exit(1);
+  server.listen(process.env.PORT || 3000, () => console.log('Server running'));
 });
