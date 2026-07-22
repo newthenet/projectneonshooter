@@ -55,34 +55,34 @@
     <input id="chatInput" type="text" class="hidden" placeholder="Нажмите . для чата" />
   </div>
 
-  <!-- Three.js canvas -->
+  <!-- Three.js -->
   <script type="importmap">
     { "imports": { "three": "https://unpkg.com/three@0.128.0/build/three.module.js" } }
   </script>
   <script type="module">
     import * as THREE from 'three';
-    // ---------- Константы ----------
-    const SERVER = 'ws://localhost:3000';
+
+    // Автоматический WebSocket URL: wss://текущий_домен
+    const SERVER = location.origin.replace(/^http/, 'ws');
+
     let token = localStorage.getItem('token');
     let user = null;
     let ws = null;
     let lobbyId = null;
-    let gameState = 'menu'; // menu, lobby, game
-    let players = {}; // локальные данные о других игроках
+    let gameState = 'menu';
+    let players = {};
     let myPlayerId = null;
     let myHealth = 100;
 
-    // Three.js переменные
+    // Three.js
     let scene, camera, renderer, clock;
-    let remotePlayers = new Map(); // id -> mesh
+    let remotePlayers = new Map();
     let ground;
 
-    // Управление
     const keyState = {};
-    let mouseX = 0, mouseY = 0;
     let isPointerLocked = false;
 
-    // UI элементы
+    // UI
     const menuDiv = document.getElementById('menu');
     const lobbyDiv = document.getElementById('lobby');
     const gameUI = document.getElementById('gameUI');
@@ -93,7 +93,7 @@
     const chatBox = document.getElementById('chatBox');
     const chatInput = document.getElementById('chatInput');
 
-    // ---------- Сетевые функции ----------
+    // ===== Сеть =====
     function connectWebSocket() {
       if (ws) ws.close();
       ws = new WebSocket(SERVER);
@@ -114,7 +114,6 @@
       switch (msg.type) {
         case 'auth_ok':
           user = msg.user;
-          token = localStorage.getItem('token'); // уже есть
           showMainMenu();
           break;
         case 'lobby_list':
@@ -145,9 +144,11 @@
       }
     }
 
-    function send(msg) { if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg)); }
+    function send(msg) {
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+    }
 
-    // ---------- UI логика ----------
+    // ===== UI =====
     function login() {
       const u = document.getElementById('loginUsername').value.trim();
       const p = document.getElementById('loginPassword').value;
@@ -155,10 +156,13 @@
         method:'POST', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({username: u, password: p})
       }).then(r=>r.json()).then(d=>{
-        if(d.token){ token=d.token; localStorage.setItem('token', token); user=d.user; connectWebSocket(); }
-        else alert(d.error);
+        if(d.token){
+          token=d.token; localStorage.setItem('token', token); user=d.user;
+          connectWebSocket();
+        } else alert(d.error);
       });
     }
+
     function register() {
       const u = document.getElementById('loginUsername').value.trim();
       const p = document.getElementById('loginPassword').value;
@@ -166,39 +170,62 @@
         method:'POST', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({username: u, password: p})
       }).then(r=>r.json()).then(d=>{
-        if(d.token){ token=d.token; localStorage.setItem('token', token); user=d.user; connectWebSocket(); }
-        else alert(d.error);
+        if(d.token){
+          token=d.token; localStorage.setItem('token', token); user=d.user;
+          connectWebSocket();
+        } else alert(d.error);
       });
     }
-    function logout() { token=null; localStorage.removeItem('token'); user=null; ws.close(); showLogin(); }
+
+    function logout() {
+      token=null; localStorage.removeItem('token'); user=null;
+      ws.close();
+      showLogin();
+    }
+
     function showLogin() {
       menuDiv.classList.remove('hidden'); lobbyDiv.classList.add('hidden'); gameUI.classList.add('hidden');
       authForms.classList.remove('hidden'); userInfo.classList.add('hidden'); menuButtons.classList.add('hidden');
     }
+
     function showMainMenu() {
       menuDiv.classList.remove('hidden'); lobbyDiv.classList.add('hidden'); gameUI.classList.add('hidden');
       authForms.classList.add('hidden'); userInfo.classList.remove('hidden'); menuButtons.classList.remove('hidden');
       document.getElementById('displayName').innerText = user.username + (user.is_neon ? ' ✔' : '');
-      if (user.is_neon) editorBtn.classList.remove('hidden'); else editorBtn.classList.add('hidden');
+      if (user.is_neon) editorBtn.classList.remove('hidden');
+      else editorBtn.classList.add('hidden');
     }
+
     function showLobbies() {
-      menuDiv.classList.add('hidden'); lobbyDiv.classList.remove('hidden'); document.getElementById('currentLobby').classList.add('hidden');
-      send({ type: 'lobby_list' }); // запрос списка
+      menuDiv.classList.add('hidden'); lobbyDiv.classList.remove('hidden');
+      document.getElementById('currentLobby').classList.add('hidden');
+      send({ type: 'lobby_list' });
     }
+
     function createLobby() { send({ type: 'create_lobby' }); }
+
     function joinLobbyUI() {
       document.getElementById('currentLobby').classList.remove('hidden');
-      document.getElementById('startBtn').style.display = (user && user.id === lobbyHost) ? 'inline' : 'none';
     }
+
     let lobbyHost = null;
     function updateLobbyPlayers(plist) {
       const ul = document.getElementById('playerList'); ul.innerHTML = '';
-      plist.forEach(p => { const li = document.createElement('li'); li.textContent = p.username; ul.appendChild(li); });
+      plist.forEach(p => {
+        const li = document.createElement('li'); li.textContent = p.username; ul.appendChild(li);
+      });
       lobbyHost = plist[0]?.id;
       document.getElementById('startBtn').style.display = (user && lobbyHost === user.id) ? 'inline' : 'none';
     }
+
     function startGame() { send({ type: 'start_game' }); }
-    function leaveLobby() { send({ type: 'leave_lobby' }); lobbyId=null; showLobbies(); }
+
+    function leaveLobby() {
+      send({ type: 'leave_lobby' });
+      lobbyId = null;
+      showLobbies();
+    }
+
     function renderLobbyList(list) {
       const div = document.getElementById('lobbyList'); div.innerHTML = '';
       list.forEach(l => {
@@ -209,13 +236,12 @@
       });
     }
 
-    // ---------- Игровая 3D часть ----------
+    // ===== Игра =====
     function startGameClient(playersData) {
       gameState = 'game';
       menuDiv.classList.add('hidden'); lobbyDiv.classList.add('hidden'); gameUI.classList.remove('hidden');
       chatInput.classList.add('hidden');
       initThreeJS();
-      // Создаём игроков
       playersData.forEach(p => {
         if (p.id === user.id) {
           myPlayerId = p.id;
@@ -237,20 +263,19 @@
       document.body.appendChild(renderer.domElement);
       clock = new THREE.Clock();
 
-      // Пол
       const groundGeo = new THREE.PlaneGeometry(50, 50);
       const groundMat = new THREE.MeshLambertMaterial({ color: 0x228b22 });
       ground = new THREE.Mesh(groundGeo, groundMat);
       ground.rotation.x = -Math.PI/2;
       scene.add(ground);
-      // Стены
+
       const wallMat = new THREE.MeshLambertMaterial({ color: 0x888888 });
       [[25,2,0,1,4,50], [-25,2,0,1,4,50], [0,2,25,50,4,1], [0,2,-25,50,4,1]].forEach(([x,y,z,w,h,d]) => {
         const wall = new THREE.Mesh(new THREE.BoxGeometry(w,h,d), wallMat);
         wall.position.set(x,y,z);
         scene.add(wall);
       });
-      // Свет
+
       scene.add(new THREE.AmbientLight(0x404040));
       const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
       dirLight.position.set(10, 20, 5);
@@ -274,30 +299,26 @@
 
     function updateRemotePlayer(id, pos, rot) {
       const mesh = remotePlayers.get(id);
-      if (mesh) {
-        mesh.position.set(pos.x, pos.y, pos.z);
-        // rot можно использовать для поворота модели
-      }
+      if (mesh) mesh.position.set(pos.x, pos.y, pos.z);
     }
 
     function onShootEvent(msg) {
       if (msg.targetId === myPlayerId) {
         myHealth = msg.targetHealth;
-        if (myHealth <= 0) alert('Вы погибли!'); // простейшая смерть
+        if (myHealth <= 0) alert('Вы погибли!');
       }
-      // Эффект выстрела можно добавить
     }
 
     function exitGame() {
       gameState = 'menu';
       document.exitPointerLock();
-      renderer.domElement.remove();
+      if (renderer) renderer.domElement.remove();
       scene = null;
       remotePlayers.clear();
       showMainMenu();
     }
 
-    // ---------- Игровой цикл ----------
+    // ===== Игровой цикл =====
     let lastInputSend = 0;
     function gameLoop() {
       requestAnimationFrame(gameLoop);
@@ -306,7 +327,6 @@
       handleMovement(dt);
       renderer.render(scene, camera);
 
-      // Отправка ввода серверу 30 раз в секунду
       const now = performance.now();
       if (now - lastInputSend > 33) {
         send({
@@ -327,31 +347,24 @@
       if (keyState['KeyS']) dir.z += 1;
       if (keyState['KeyA']) dir.x -= 1;
       if (keyState['KeyD']) dir.x += 1;
-      if (keyState['Space'] || keyState['KeyQ']) dir.y += 1; // прыжок (упрощённо)
+      if (keyState['Space'] || keyState['KeyQ']) dir.y += 1;
       dir.normalize().multiplyScalar(speed);
       camera.position.add(dir);
-      // Простейшая гравитация
       if (camera.position.y > 1) camera.position.y -= 9.8 * dt;
       else camera.position.y = 1;
     }
 
-    // ---------- Обработчики ввода ----------
+    // ===== Управление =====
     document.addEventListener('keydown', (e) => {
       keyState[e.code] = true;
-      if (e.code === 'KeyC') { /* приседание */ }
-      if (e.code === 'KeyE') { /* перезарядка */ }
       if (e.code === 'KeyL') { if (confirm('Сдаться?')) exitGame(); }
-      if (e.code === 'KeyZ') { alert('Меню настроек'); } // заглушка
-      if (e.code === 'KeyX') { alert('Консоль'); }
-      if (e.code === 'Period') { // чат
+      if (e.code === 'Period') {
         if (gameState === 'game') {
           chatInput.classList.toggle('hidden');
           if (!chatInput.classList.contains('hidden')) chatInput.focus();
         }
       }
-      // Быстрый чат V + ...
       if (e.code === 'KeyV') {
-        // ждём следующую клавишу (упростим)
         const quickHandler = (ev) => {
           if (ev.code === 'KeyT') send({ type:'chat', text:'Hello' });
           else if (ev.code === 'KeyY') send({ type:'chat', text:'Run' });
@@ -364,6 +377,7 @@
         document.addEventListener('keydown', quickHandler, { once: false });
       }
     });
+
     document.addEventListener('keyup', (e) => { keyState[e.code] = false; });
 
     document.addEventListener('mousemove', (e) => {
@@ -376,20 +390,13 @@
 
     document.addEventListener('click', () => {
       if (gameState === 'game' && isPointerLocked) {
-        // Стрельба – простой рейкаст
         const raycaster = new THREE.Raycaster();
         raycaster.setFromCamera(new THREE.Vector2(0,0), camera);
-        // Проверяем попадание в других игроков
         let hitPlayerId = null;
         remotePlayers.forEach((mesh, id) => {
-          const intersects = raycaster.intersectObject(mesh);
-          if (intersects.length > 0) hitPlayerId = id;
+          if (raycaster.intersectObject(mesh).length > 0) hitPlayerId = id;
         });
-        if (hitPlayerId) {
-          send({ type: 'shoot', targetId: hitPlayerId });
-        } else {
-          // выстрел в пустоту (можно звук)
-        }
+        if (hitPlayerId) send({ type: 'shoot', targetId: hitPlayerId });
       }
     });
 
@@ -411,7 +418,7 @@
       chatBox.scrollTop = chatBox.scrollHeight;
     }
 
-    // Запуск
+    // Старт
     if (token) {
       connectWebSocket();
     } else {
