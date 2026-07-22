@@ -4,44 +4,94 @@ const http = require('http');
 const WebSocket = require('ws');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
-const Database = require('better-sqlite3');
 const { v4: uuidv4 } = require('uuid');
+const initSqlJs = require('sql.js');
+const fs = require('fs');
 
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-const db = new Database('neon.db');
+let db; // будет инициализирована асинхронно
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-123';
-const NEON_PASSWORD = process.env.NEON_PASSWORD || 'pnshooter888Qcod5'; // продакшен передавать через env
+const NEON_PASSWORD = process.env.NEON_PASSWORD || 'pnshooter888Qcod5';
 const NEON_HASH = bcrypt.hashSync(NEON_PASSWORD, 10);
 
-// Инициализация БД
-db.exec(`
-  CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT UNIQUE,
-    password TEXT,
-    is_neon INTEGER DEFAULT 0
-  );
-  CREATE TABLE IF NOT EXISTS maps (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT,
-    author_id INTEGER,
-    data TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
-`);
+// Загрузка/создание БД
+async function initDatabase() {
+  const SQL = await initSqlJs();
+  if (fs.existsSync('neon.db')) {
+    const buffer = fs.readFileSync('neon.db');
+    db = new SQL.Database(buffer);
+  } else {
+    db = new SQL.Database();
+  }
+  db.run(`
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT UNIQUE,
+      password TEXT,
+      is_neon INTEGER DEFAULT 0
+    )
+  `);
+  db.run(`
+    CREATE TABLE IF NOT EXISTS maps (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT,
+      author_id INTEGER,
+      data TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  saveDatabase();
+}
+
+function saveDatabase() {
+  const data = db.export();
+  const buffer = Buffer.from(data);
+  fs.writeFileSync('neon.db', buffer);
+}
+
+// Вспомогательные функции для работы с sql.js (аналоги better-sqlite3)
+function dbGet(sql, params = []) {
+  const stmt = db.prepare(sql);
+  if (params.length > 0) stmt.bind(params);
+  if (stmt.step()) {
+    const row = stmt.getAsObject();
+    stmt.free();
+    return row;
+  }
+  stmt.free();
+  return undefined;
+}
+
+function dbAll(sql, params = []) {
+  const stmt = db.prepare(sql);
+  if (params.length > 0) stmt.bind(params);
+  const rows = [];
+  while (stmt.step()) {
+    rows.push(stmt.getAsObject());
+  }
+  stmt.free();
+  return rows;
+}
+
+function dbRun(sql, params = []) {
+  db.run(sql, params);
+  saveDatabase();
+}
 
 // Создаём аккаунт Neon, если нет
-if (!db.prepare('SELECT id FROM users WHERE is_neon = 1').get()) {
-  db.prepare('INSERT INTO users (username, password, is_neon) VALUES (?, ?, 1)')
-    .run('Neon', NEON_HASH);
+async function createNeonAccount() {
+  const neon = dbGet('SELECT id FROM users WHERE is_neon = 1');
+  if (!neon) {
+    dbRun('INSERT INTO users (username, password, is_neon) VALUES (?, ?, 1)', ['Neon', NEON_HASH]);
+  }
 }
 
 // Middleware
 app.use(express.json());
-app.use(express.static('client')); // раздача статики
+app.use(express.static('client'));
 
 // JWT middleware
 function auth(req, res, next) {
@@ -49,26 +99,30 @@ function auth(req, res, next) {
   if (!token) return res.status(401).json({ error: 'No token' });
   try {
     const dec = jwt.verify(token, JWT_SECRET);
-    req.user = db.prepare('SELECT * FROM users WHERE id = ?').get(dec.id);
+    req.user = dbGet('SELECT * FROM users WHERE id = ?', [dec.id]);
+    if (!req.user) return res.status(401).json({ error: 'User not found' });
     next();
-  } catch { res.status(401).json({ error: 'Invalid token' }); }
+  } catch {
+    res.status(401).json({ error: 'Invalid token' });
+  }
 }
 
 // === REST API ===
 app.post('/api/register', (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) return res.status(400).json({ error: 'Fields required' });
-  try {
-    const hash = bcrypt.hashSync(password, 10);
-    const info = db.prepare('INSERT INTO users (username, password) VALUES (?, ?)').run(username, hash);
-    const token = jwt.sign({ id: info.lastInsertRowid }, JWT_SECRET);
-    res.json({ token, user: { id: info.lastInsertRowid, username, is_neon: false } });
-  } catch { res.status(409).json({ error: 'Username exists' }); }
+  const existing = dbGet('SELECT id FROM users WHERE username = ?', [username]);
+  if (existing) return res.status(409).json({ error: 'Username exists' });
+  const hash = bcrypt.hashSync(password, 10);
+  dbRun('INSERT INTO users (username, password) VALUES (?, ?)', [username, hash]);
+  const newUser = dbGet('SELECT * FROM users WHERE username = ?', [username]);
+  const token = jwt.sign({ id: newUser.id }, JWT_SECRET);
+  res.json({ token, user: { id: newUser.id, username: newUser.username, is_neon: !!newUser.is_neon } });
 });
 
 app.post('/api/login', (req, res) => {
   const { username, password } = req.body;
-  const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
+  const user = dbGet('SELECT * FROM users WHERE username = ?', [username]);
   if (!user || !bcrypt.compareSync(password, user.password))
     return res.status(401).json({ error: 'Bad credentials' });
   const token = jwt.sign({ id: user.id }, JWT_SECRET);
@@ -78,23 +132,23 @@ app.post('/api/login', (req, res) => {
 app.post('/api/maps', auth, (req, res) => {
   if (!req.user.is_neon) return res.status(403).json({ error: 'Neon only' });
   const { name, data } = req.body;
-  const info = db.prepare('INSERT INTO maps (name, author_id, data) VALUES (?, ?, ?)')
-    .run(name, req.user.id, JSON.stringify(data));
-  res.json({ id: info.lastInsertRowid });
+  dbRun('INSERT INTO maps (name, author_id, data) VALUES (?, ?, ?)', [name, req.user.id, JSON.stringify(data)]);
+  res.json({ success: true });
 });
 
 app.get('/api/maps', auth, (req, res) => {
-  const maps = db.prepare('SELECT id, name, author_id FROM maps').all();
+  const maps = dbAll('SELECT id, name, author_id, created_at FROM maps');
   res.json(maps);
 });
 
 app.get('/api/maps/:id', auth, (req, res) => {
-  const map = db.prepare('SELECT * FROM maps WHERE id = ?').get(req.params.id);
+  const map = dbGet('SELECT * FROM maps WHERE id = ?', [req.params.id]);
   if (!map) return res.status(404).json({ error: 'Not found' });
-  res.json({ ...map, data: JSON.parse(map.data) });
+  map.data = JSON.parse(map.data);
+  res.json(map);
 });
 
-// Все остальные GET запросы -> отдаём index.html (для SPA)
+// Все остальные GET запросы -> отдаём index.html
 app.get('*', (req, res) => {
   res.sendFile(__dirname + '/client/index.html');
 });
@@ -112,7 +166,7 @@ wss.on('connection', (ws) => {
       case 'auth': {
         try {
           const dec = jwt.verify(msg.token, JWT_SECRET);
-          const user = db.prepare('SELECT id, username, is_neon FROM users WHERE id = ?').get(dec.id);
+          const user = dbGet('SELECT id, username, is_neon FROM users WHERE id = ?', [dec.id]);
           if (!user) { ws.send(JSON.stringify({ type: 'error', text: 'User not found' })); return; }
           clients.set(ws, { user, lobbyId: null, playerId: null });
           ws.send(JSON.stringify({ type: 'auth_ok', user }));
@@ -292,6 +346,13 @@ function sendLobbyList(ws) {
   ws.send(JSON.stringify({ type: 'lobby_list', lobbies: list }));
 }
 
-server.listen(process.env.PORT || 3000, () => {
-  console.log('Project Neon server running on port ' + (process.env.PORT || 3000));
+// Запуск сервера после инициализации БД
+initDatabase().then(() => {
+  createNeonAccount();
+  server.listen(process.env.PORT || 3000, () => {
+    console.log('Project Neon server running on port ' + (process.env.PORT || 3000));
+  });
+}).catch(err => {
+  console.error('Failed to initialize database:', err);
+  process.exit(1);
 });
