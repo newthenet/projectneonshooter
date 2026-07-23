@@ -1,4 +1,3 @@
-// server.js
 const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
@@ -146,42 +145,72 @@ app.post('/api/win', auth, async (req, res) => {
 
 app.get('*', (req, res) => res.sendFile(__dirname + '/client/index.html'));
 
-// ==================== Хранилище лобби с защитой ====================
-let lobbies = new Map(); // Объявляем как let, чтобы можно было пересоздать
+// ==================== Хранилище лобби (инкапсуляция) ====================
+const LobbyStorage = (() => {
+  const lobbies = new Map(); // приватная переменная
 
-// Функция для безопасной итерации по лобби
-function forEachLobby(callback) {
-  // Если вдруг lobbies перестала быть Map – пересоздаём
-  if (!(lobbies instanceof Map)) {
-    console.warn('⚠️ lobbies переопределена! Пересоздаём Map.');
-    lobbies = new Map();
-  }
-  for (const [id, lobby] of lobbies) {
-    callback(id, lobby);
-  }
-}
-
-// Получить список ожидающих лобби для трансляции
-function getWaitingLobbies() {
-  if (!(lobbies instanceof Map)) {
-    console.warn('⚠️ lobbies не Map в getWaitingLobbies, пересоздаём');
-    lobbies = new Map();
-  }
-  const list = [];
-  for (const [id, lobby] of lobbies) {
-    if (lobby.state === 'waiting') {
-      list.push({
-        id,
-        host: lobby.players[0]?.username || 'Unknown',
-        players: lobby.players.length
-      });
+  return {
+    get(id) {
+      return lobbies.get(id);
+    },
+    set(id, lobby) {
+      lobbies.set(id, lobby);
+    },
+    delete(id) {
+      lobbies.delete(id);
+    },
+    has(id) {
+      return lobbies.has(id);
+    },
+    getWaitingList() {
+      const list = [];
+      for (const [id, lobby] of lobbies) {
+        if (lobby.state === 'waiting') {
+          list.push({
+            id,
+            host: lobby.players[0]?.username || 'Unknown',
+            players: lobby.players.length
+          });
+        }
+      }
+      return list;
+    },
+    hasActiveLobby(userId) {
+      for (const [id, lobby] of lobbies) {
+        if (lobby.host === userId && lobby.state !== 'finished') {
+          return true;
+        }
+      }
+      return false;
+    },
+    removePlayer(ws, userId) {
+      let removed = false;
+      for (const [id, lobby] of lobbies) {
+        const idx = lobby.players.findIndex(p => p.ws === ws);
+        if (idx !== -1) {
+          lobby.players.splice(idx, 1);
+          if (lobby.players.length === 0) {
+            lobbies.delete(id);
+          } else {
+            if (lobby.host === userId) {
+              lobby.host = lobby.players[0].id;
+            }
+            lobby.players.forEach(p => p.ws.send(JSON.stringify({
+              type: 'lobby_update',
+              players: lobby.players.map(p => ({ id: p.id, username: p.username }))
+            })));
+          }
+          removed = true;
+          break;
+        }
+      }
+      return removed;
     }
-  }
-  return list;
-}
+  };
+})();
 
 // ==================== WebSocket ====================
-const clients = new Map(); // ws -> { user, lobbyId, peerId }
+const clients = new Map();
 
 wss.on('connection', (ws) => {
   ws.on('message', (raw) => {
@@ -218,14 +247,7 @@ wss.on('connection', (ws) => {
         const client = clients.get(ws);
         if (!client) return;
 
-        // Проверяем, нет ли уже активного лобби у этого пользователя
-        let alreadyHas = false;
-        forEachLobby((id, lobby) => {
-          if (lobby.host === client.user.id && lobby.state !== 'finished') {
-            alreadyHas = true;
-          }
-        });
-        if (alreadyHas) {
+        if (LobbyStorage.hasActiveLobby(client.user.id)) {
           ws.send(JSON.stringify({ type: 'error', text: 'У вас уже есть активное лобби' }));
           return;
         }
@@ -239,7 +261,7 @@ wss.on('connection', (ws) => {
           mapData: null,
           round: 0
         };
-        lobbies.set(lobbyId, lobby);
+        LobbyStorage.set(lobbyId, lobby);
         client.lobbyId = lobbyId;
         client.peerId = client.user.id;
 
@@ -256,7 +278,7 @@ wss.on('connection', (ws) => {
         const client = clients.get(ws);
         if (!client) return;
 
-        const lobby = lobbies.get(msg.lobbyId);
+        const lobby = LobbyStorage.get(msg.lobbyId);
         if (!lobby || lobby.state !== 'waiting') {
           ws.send(JSON.stringify({ type: 'error', text: 'Лобби недоступно' }));
           return;
@@ -285,7 +307,7 @@ wss.on('connection', (ws) => {
       case 'set_map': {
         const client = clients.get(ws);
         if (!client || !client.lobbyId) return;
-        const lobby = lobbies.get(client.lobbyId);
+        const lobby = LobbyStorage.get(client.lobbyId);
         if (!lobby || lobby.host !== client.user.id) return;
         lobby.mapData = msg.mapData;
         break;
@@ -294,7 +316,7 @@ wss.on('connection', (ws) => {
       case 'start_game': {
         const client = clients.get(ws);
         if (!client || !client.lobbyId) return;
-        const lobby = lobbies.get(client.lobbyId);
+        const lobby = LobbyStorage.get(client.lobbyId);
         if (!lobby || lobby.host !== client.user.id || lobby.players.length < 2) {
           ws.send(JSON.stringify({ type: 'error', text: 'Недостаточно игроков или вы не хост' }));
           return;
@@ -322,7 +344,7 @@ wss.on('connection', (ws) => {
       case 'signal': {
         const client = clients.get(ws);
         if (!client || !client.lobbyId) return;
-        const lobby = lobbies.get(client.lobbyId);
+        const lobby = LobbyStorage.get(client.lobbyId);
         if (!lobby) return;
         const target = lobby.players.find(p => p.id === msg.target);
         if (target) {
@@ -338,12 +360,12 @@ wss.on('connection', (ws) => {
       case 'leave_lobby': {
         const client = clients.get(ws);
         if (!client || !client.lobbyId) return;
-        const lobby = lobbies.get(client.lobbyId);
+        const lobby = LobbyStorage.get(client.lobbyId);
         if (!lobby) return;
 
         lobby.players = lobby.players.filter(p => p.ws !== ws);
         if (lobby.players.length === 0) {
-          lobbies.delete(client.lobbyId);
+          LobbyStorage.delete(client.lobbyId);
         } else {
           if (lobby.host === client.user.id) lobby.host = lobby.players[0].id;
           lobby.players.forEach(p => p.ws.send(JSON.stringify({
@@ -359,7 +381,7 @@ wss.on('connection', (ws) => {
       case 'game_over': {
         const client = clients.get(ws);
         if (!client || !client.lobbyId) return;
-        const lobby = lobbies.get(client.lobbyId);
+        const lobby = LobbyStorage.get(client.lobbyId);
         if (!lobby) return;
 
         if (msg.winnerTeam) {
@@ -370,7 +392,7 @@ wss.on('connection', (ws) => {
           });
         }
         lobby.state = 'finished';
-        lobbies.delete(client.lobbyId);
+        LobbyStorage.delete(client.lobbyId);
         broadcastLobbyList();
         break;
       }
@@ -383,34 +405,18 @@ wss.on('connection', (ws) => {
   ws.on('close', () => {
     const client = clients.get(ws);
     if (client && client.lobbyId) {
-      const lobby = lobbies.get(client.lobbyId);
-      if (lobby) {
-        lobby.players = lobby.players.filter(p => p.ws !== ws);
-        if (lobby.players.length === 0) {
-          lobbies.delete(client.lobbyId);
-        } else {
-          if (lobby.host === client.user.id) lobby.host = lobby.players[0].id;
-          lobby.players.forEach(p => p.ws.send(JSON.stringify({
-            type: 'lobby_update',
-            players: lobby.players.map(p => ({ id: p.id, username: p.username }))
-          })));
-        }
-      }
+      LobbyStorage.removePlayer(ws, client.user.id);
+      client.lobbyId = null;
+      broadcastLobbyList();
     }
     clients.delete(ws);
   });
 });
 
-// ==================== Функции трансляции (с защитой) ====================
+// ==================== Функции трансляции ====================
 function broadcastLobbyList() {
   try {
-    // Гарантируем, что lobbies – это Map
-    if (!(lobbies instanceof Map)) {
-      console.warn('⚠️ broadcastLobbyList: lobbies не Map, пересоздаём');
-      lobbies = new Map();
-    }
-    const list = getWaitingLobbies();
-
+    const list = LobbyStorage.getWaitingList();
     for (const [ws, client] of clients) {
       if (client.user && !client.lobbyId) {
         if (ws.readyState === WebSocket.OPEN) {
@@ -425,11 +431,7 @@ function broadcastLobbyList() {
 
 function sendLobbyList(ws) {
   try {
-    if (!(lobbies instanceof Map)) {
-      console.warn('⚠️ sendLobbyList: lobbies не Map, пересоздаём');
-      lobbies = new Map();
-    }
-    const list = getWaitingLobbies();
+    const list = LobbyStorage.getWaitingList();
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'lobby_list', lobbies: list }));
     }
@@ -442,7 +444,6 @@ function sendLobbyList(ws) {
 connectDB().then(() => {
   server.listen(process.env.PORT || 3000, () => {
     console.log('✅ Project Neon server running');
-    // Таймер с защитой от падения
     setInterval(() => {
       try {
         broadcastLobbyList();
