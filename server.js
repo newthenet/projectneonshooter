@@ -315,6 +315,7 @@ wss.on('connection', (ws) => {
 });
 
 function broadcastLobbyList() {
+  if (!lobbies) return;
   const list = [];
   for (const [id, lobby] of lobbies) {
     if (lobby.state === 'waiting') {
@@ -329,6 +330,7 @@ function broadcastLobbyList() {
 }
 
 function sendLobbyList(ws) {
+  if (!lobbies) return;
   const list = [];
   for (const [id, lobby] of lobbies) {
     if (lobby.state === 'waiting') {
@@ -338,8 +340,11 @@ function sendLobbyList(ws) {
   ws.send(JSON.stringify({ type: 'lobby_list', lobbies: list }));
 }
 
-setInterval(broadcastLobbyList, 3000);
-
+// Запускаем таймер только после того, как сервер готов
 connectDB().then(() => {
-  server.listen(process.env.PORT || 3000, () => console.log('Project Neon server running'));
+  server.listen(process.env.PORT || 3000, () => {
+    console.log('Project Neon server running');
+    // Таймер обновления списка лобби
+    setInterval(broadcastLobbyList, 3000);
+  });
 });
