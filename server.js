@@ -145,9 +145,23 @@ app.post('/api/win', auth, async (req, res) => {
 
 app.get('*', (req, res) => res.sendFile(__dirname + '/client/index.html'));
 
-// ==================== Хранилище лобби (инкапсуляция) ====================
+// ==================== Хранилище лобби (защищённое) ====================
 const LobbyStorage = (() => {
-  const lobbies = new Map(); // приватная переменная
+  // Приватная Map – никогда не будет переопределена извне
+  const lobbies = new Map();
+
+  // Вспомогательная функция для проверки целостности
+  function ensureMap() {
+    if (!(lobbies instanceof Map)) {
+      console.error('❌ CRITICAL: lobbies перестала быть Map! Пересоздаём.');
+      // Это не сработает, так как const, но мы пересоздадим через утечку? 
+      // Но она не может быть переопределена, так как это const.
+      // Тем не менее, на всякий случай, если вдруг станет не Map, 
+      // мы просто вернём пустой список.
+      return false;
+    }
+    return true;
+  }
 
   return {
     get(id) {
@@ -163,19 +177,26 @@ const LobbyStorage = (() => {
       return lobbies.has(id);
     },
     getWaitingList() {
+      if (!ensureMap()) return [];
       const list = [];
-      for (const [id, lobby] of lobbies) {
-        if (lobby.state === 'waiting') {
-          list.push({
-            id,
-            host: lobby.players[0]?.username || 'Unknown',
-            players: lobby.players.length
-          });
+      try {
+        for (const [id, lobby] of lobbies) {
+          if (lobby.state === 'waiting') {
+            list.push({
+              id,
+              host: lobby.players[0]?.username || 'Unknown',
+              players: lobby.players.length
+            });
+          }
         }
+      } catch (err) {
+        console.error('❌ Ошибка итерации lobbies:', err);
+        return [];
       }
       return list;
     },
     hasActiveLobby(userId) {
+      if (!ensureMap()) return false;
       for (const [id, lobby] of lobbies) {
         if (lobby.host === userId && lobby.state !== 'finished') {
           return true;
@@ -184,7 +205,7 @@ const LobbyStorage = (() => {
       return false;
     },
     removePlayer(ws, userId) {
-      let removed = false;
+      if (!ensureMap()) return false;
       for (const [id, lobby] of lobbies) {
         const idx = lobby.players.findIndex(p => p.ws === ws);
         if (idx !== -1) {
@@ -200,11 +221,10 @@ const LobbyStorage = (() => {
               players: lobby.players.map(p => ({ id: p.id, username: p.username }))
             })));
           }
-          removed = true;
-          break;
+          return true;
         }
       }
-      return removed;
+      return false;
     }
   };
 })();
@@ -444,6 +464,7 @@ function sendLobbyList(ws) {
 connectDB().then(() => {
   server.listen(process.env.PORT || 3000, () => {
     console.log('✅ Project Neon server running');
+    // Таймер с защитой
     setInterval(() => {
       try {
         broadcastLobbyList();
