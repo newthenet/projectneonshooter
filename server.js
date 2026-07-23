@@ -147,8 +147,8 @@ app.post('/api/win', auth, async (req, res) => {
 app.get('*', (req, res) => res.sendFile(__dirname + '/client/index.html'));
 
 // ==================== WebSocket ====================
-const clients = new Map();
-const lobbies = new Map();
+const clients = new Map();   // <-- ВОТ ЭТА СТРОКА ОБЯЗАТЕЛЬНА
+const lobbies = new Map();   // <-- И ЭТА СТРОКА ОБЯЗАТЕЛЬНА
 
 wss.on('connection', (ws) => {
   ws.on('message', (raw) => {
@@ -340,11 +340,10 @@ function sendLobbyList(ws) {
   ws.send(JSON.stringify({ type: 'lobby_list', lobbies: list }));
 }
 
-// Запускаем таймер только после того, как сервер готов
+// Запуск сервера
 connectDB().then(() => {
   server.listen(process.env.PORT || 3000, () => {
     console.log('Project Neon server running');
-    // Таймер обновления списка лобби
     setInterval(broadcastLobbyList, 3000);
   });
 });
