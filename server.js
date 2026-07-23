@@ -147,10 +147,10 @@ app.post('/api/win', auth, async (req, res) => {
 
 app.get('*', (req, res) => res.sendFile(__dirname + '/client/index.html'));
 
-// ==================== Управление лобби ====================
+// ==================== Управление лобби (Железобетонная версия) ====================
 class LobbyManager {
   constructor() {
-    this._lobbies = new Map();
+    this._lobbies = {}; 
   }
 
   getAll() {
@@ -158,30 +158,39 @@ class LobbyManager {
   }
 
   get(id) {
-    return this._lobbies.get(id);
+    return this._lobbies[id] || null;
   }
 
   set(id, lobby) {
-    this._lobbies.set(id, lobby);
+    if (typeof this._lobbies !== 'object' || this._lobbies === null) {
+      this._lobbies = {};
+    }
+    this._lobbies[id] = lobby;
   }
 
   delete(id) {
-    this._lobbies.delete(id);
+    if (this._lobbies && this._lobbies[id]) {
+      delete this._lobbies[id];
+    }
   }
 
   has(id) {
-    return this._lobbies.has(id);
+    return !!(this._lobbies && this._lobbies[id]);
   }
 
   getWaitingList() {
     const list = [];
-    if (!(this._lobbies instanceof Map)) return list;
-    
-    for (const [id, lobby] of this._lobbies.entries()) {
+    if (typeof this._lobbies !== 'object' || this._lobbies === null) {
+      return list;
+    }
+
+    const keys = Object.keys(this._lobbies);
+    for (const id of keys) {
+      const lobby = this._lobbies[id];
       if (lobby && lobby.state === 'waiting') {
         list.push({
-          id,
-          host: lobby.players[0]?.username || 'Unknown',
+          id: id,
+          host: (lobby.players && lobby.players[0]) ? lobby.players[0].username : 'Unknown',
           players: lobby.players ? lobby.players.length : 0
         });
       }
@@ -190,11 +199,14 @@ class LobbyManager {
   }
 
   forEach(callback) {
-    this._lobbies.forEach(callback);
+    if (typeof this._lobbies !== 'object' || this._lobbies === null) return;
+    Object.keys(this._lobbies).forEach(id => {
+      callback(this._lobbies[id], id);
+    });
   }
 
   isValid() {
-    return this._lobbies instanceof Map;
+    return typeof this._lobbies === 'object' && this._lobbies !== null;
   }
 }
 
@@ -306,8 +318,6 @@ wss.on('connection', (ws) => {
         client.lobbyId = msg.lobbyId;
 
         ws.send(JSON.stringify({ type: 'joined_lobby', lobbyId: msg.lobbyId }));
-        
-        // Уведомляем хоста или меняем стейт, если лобби заполнено
         broadcastLobbyList();
         break;
       }
@@ -319,20 +329,8 @@ wss.on('connection', (ws) => {
     if (client && client.lobbyId) {
       const lobby = lobbyManager.get(client.lobbyId);
       if (lobby) {
-        // Удаляем игрока из лобби
-        lobby.players = lobby.players.filter(p => p.id !== client.user.id);
+        lobby.players = lobby.players ? lobby.players.filter(p => p.id !== client.user.id) : [];
         if (lobby.players.length === 0 || lobby.host === client.user.id) {
-          lobbyManager.delete(client.lobbyId);
-        }
-      }
-    }
-    clients.delete(ws);
-    broadcastLobbyList();
-  });
-});
-
+(client.lobbyId);}}}clients.delete(ws);broadcastLobbyList();});});
 // ==================== Старт сервера ====================
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log(`Сервер запущен на порту ${PORT}`);
-});
+const PORT = process.env.PORT || 3000;server.listen(PORT, () => {console.log(Сервер запущен на порту ${PORT});});
