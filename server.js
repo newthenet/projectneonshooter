@@ -145,17 +145,31 @@ app.post('/api/win', auth, async (req, res) => {
 
 app.get('*', (req, res) => res.sendFile(__dirname + '/client/index.html'));
 
-// ==================== Глобальные хранилища с защитой ====================
+// ==================== Хранилища с максимальной защитой ====================
 let lobbies = new Map();
 let clients = new Map();
 
-// Безопасное получение списка ожидающих лобби (используем forEach)
-function getWaitingLobbies() {
-  if (!(lobbies instanceof Map)) {
-    console.error('⚠️ lobbies не Map! Пересоздаём.');
-    lobbies = new Map();
-    return [];
+// Утилита: гарантирует, что переменная является Map
+function ensureMap(variableName) {
+  if (variableName === 'lobbies') {
+    if (!(lobbies instanceof Map)) {
+      console.error(`⚠️ lobbies имеет тип ${typeof lobbies}, пересоздаём Map`);
+      lobbies = new Map();
+    }
+    return lobbies;
   }
+  if (variableName === 'clients') {
+    if (!(clients instanceof Map)) {
+      console.error(`⚠️ clients имеет тип ${typeof clients}, пересоздаём Map`);
+      clients = new Map();
+    }
+    return clients;
+  }
+}
+
+// Получение списка ожидающих лобби (без for...of)
+function getWaitingLobbies() {
+  ensureMap('lobbies');
   const list = [];
   lobbies.forEach((lobby, id) => {
     if (lobby.state === 'waiting') {
@@ -169,14 +183,11 @@ function getWaitingLobbies() {
   return list;
 }
 
-// Безопасная трансляция списка лобби (используем forEach)
+// Трансляция списка лобби
 function broadcastLobbyList() {
   try {
     const list = getWaitingLobbies();
-    if (!(clients instanceof Map)) {
-      console.error('⚠️ clients не Map! Пересоздаём.');
-      clients = new Map();
-    }
+    ensureMap('clients');
     clients.forEach((client, ws) => {
       if (client.user && !client.lobbyId && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'lobby_list', lobbies: list }));
@@ -198,12 +209,9 @@ function sendLobbyList(ws) {
   }
 }
 
-// Проверка, есть ли у пользователя активное лобби
+// Проверка активного лобби у пользователя
 function hasActiveLobby(userId) {
-  if (!(lobbies instanceof Map)) {
-    lobbies = new Map();
-    return false;
-  }
+  ensureMap('lobbies');
   let found = false;
   lobbies.forEach((lobby) => {
     if (lobby.host === userId && lobby.state !== 'finished') found = true;
@@ -213,10 +221,7 @@ function hasActiveLobby(userId) {
 
 // Удаление игрока из лобби
 function removePlayerFromLobby(ws, userId) {
-  if (!(lobbies instanceof Map)) {
-    lobbies = new Map();
-    return false;
-  }
+  ensureMap('lobbies');
   let removed = false;
   lobbies.forEach((lobby, id) => {
     const idx = lobby.players.findIndex(p => p.ws === ws);
