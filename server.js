@@ -147,8 +147,8 @@ app.post('/api/win', auth, async (req, res) => {
 app.get('*', (req, res) => res.sendFile(__dirname + '/client/index.html'));
 
 // ==================== WebSocket ====================
-const clients = new Map();   // <-- ВОТ ЭТА СТРОКА ОБЯЗАТЕЛЬНА
-const lobbies = new Map();   // <-- И ЭТА СТРОКА ОБЯЗАТЕЛЬНА
+const clients = new Map();
+const lobbies = new Map();   // ← ЕДИНСТВЕННОЕ ОБЪЯВЛЕНИЕ, нигде не переопределяется
 
 wss.on('connection', (ws) => {
   ws.on('message', (raw) => {
@@ -315,7 +315,7 @@ wss.on('connection', (ws) => {
 });
 
 function broadcastLobbyList() {
-  if (!lobbies) return;
+  if (!(lobbies instanceof Map)) return;  // Защита от переопределения
   const list = [];
   for (const [id, lobby] of lobbies) {
     if (lobby.state === 'waiting') {
@@ -330,7 +330,7 @@ function broadcastLobbyList() {
 }
 
 function sendLobbyList(ws) {
-  if (!lobbies) return;
+  if (!(lobbies instanceof Map)) return;  // Защита
   const list = [];
   for (const [id, lobby] of lobbies) {
     if (lobby.state === 'waiting') {
