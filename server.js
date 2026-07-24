@@ -6,6 +6,7 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
 const { MongoClient, ObjectId } = require('mongodb');
+const os = require('os');
 
 const app = express();
 const server = http.createServer(app);
@@ -34,18 +35,11 @@ async function connectDB() {
       db = client.db('projectneon');
       users = db.collection('users');
       maps = db.collection('maps');
-
       await users.createIndex({ username: 1 }, { unique: true });
       await maps.createIndex({ author_id: 1 });
-
       const neon = await users.findOne({ is_neon: true });
       if (!neon) {
-        await users.insertOne({
-          username: 'Neon',
-          password: NEON_HASH,
-          is_neon: true,
-          wins: 0,
-        });
+        await users.insertOne({ username: 'Neon', password: NEON_HASH, is_neon: true, wins: 0 });
       }
       console.log('MongoDB готова');
       return;
@@ -76,19 +70,11 @@ app.post('/api/register', async (req, res) => {
   try {
     const { username, password } = req.body;
     if (!username || !password) return res.status(400).json({ error: 'Fields required' });
-    const exists = await users.findOne({ username });
-    if (exists) return res.status(409).json({ error: 'Username exists' });
-    const result = await users.insertOne({
-      username,
-      password: bcrypt.hashSync(password, 10),
-      is_neon: false,
-      wins: 0,
-    });
+    if (await users.findOne({ username })) return res.status(409).json({ error: 'Username exists' });
+    const result = await users.insertOne({ username, password: bcrypt.hashSync(password, 10), is_neon: false, wins: 0 });
     const token = jwt.sign({ id: result.insertedId }, JWT_SECRET);
     res.json({ token, user: { id: result.insertedId, username, is_neon: false } });
-  } catch (e) {
-    res.status(500).json({ error: 'Server error' });
-  }
+  } catch (e) { res.status(500).json({ error: 'Server error' }); }
 });
 
 app.post('/api/login', async (req, res) => {
@@ -99,9 +85,7 @@ app.post('/api/login', async (req, res) => {
       return res.status(401).json({ error: 'Bad credentials' });
     const token = jwt.sign({ id: user._id }, JWT_SECRET);
     res.json({ token, user: { id: user._id, username, is_neon: user.is_neon } });
-  } catch (e) {
-    res.status(500).json({ error: 'Server error' });
-  }
+  } catch (e) { res.status(500).json({ error: 'Server error' }); }
 });
 
 app.get('/api/leaderboard', async (req, res) => {
@@ -109,16 +93,13 @@ app.get('/api/leaderboard', async (req, res) => {
     const top = await users.find({}, { projection: { username: 1, wins: 1 } })
       .sort({ wins: -1 }).limit(50).toArray();
     res.json(top);
-  } catch (e) {
-    res.status(500).json({ error: 'Server error' });
-  }
+  } catch (e) { res.status(500).json({ error: 'Server error' }); }
 });
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', memory: process.memoryUsage(), db: !!(db && db.topology?.isConnected()) });
 });
 
-// Карты
 app.post('/api/maps', auth, async (req, res) => {
   try {
     const user = await users.findOne({ _id: req.userId });
@@ -130,8 +111,7 @@ app.post('/api/maps', auth, async (req, res) => {
 
 app.get('/api/maps', auth, async (req, res) => {
   try {
-    const list = await maps.find({}, { projection: { name: 1, created_at: 1 } }).toArray();
-    res.json(list);
+    res.json(await maps.find({}, { projection: { name: 1, created_at: 1 } }).toArray());
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -146,7 +126,7 @@ app.get('/api/maps/:id', auth, async (req, res) => {
 app.get('*', (req, res) => res.sendFile(__dirname + '/client/index.html'));
 
 // ==================== WebSocket ====================
-const clients = new Map();   // ws -> { user, lobbyId }
+const clients = new Map();
 const lobbies = new Map();
 
 function sendLobbyList(ws) {
@@ -196,7 +176,6 @@ wss.on('connection', (ws) => {
         case 'create_lobby': {
           const client = clients.get(ws);
           if (!client) return;
-          // Проверка на дубликат
           for (const [id, l] of lobbies) {
             if (l.host === client.user.id && l.state !== 'finished') {
               return ws.send(JSON.stringify({ type: 'error', text: 'У вас уже есть лобби' }));
@@ -208,6 +187,7 @@ wss.on('connection', (ws) => {
             host: client.user.id,
             players: [{ id: client.user.id, username: client.user.username, ws }],
             state: 'waiting',
+            mapData: null,
           };
           lobbies.set(lobbyId, lobby);
           client.lobbyId = lobbyId;
@@ -222,7 +202,7 @@ wss.on('connection', (ws) => {
           if (!lobby || lobby.state !== 'waiting') {
             return ws.send(JSON.stringify({ type: 'error', text: 'Лобби недоступно' }));
           }
-          if (lobby.players.length >= 2) {   // <-- ЛИМИТ 2 ИГРОКА
+          if (lobby.players.length >= 2) {
             return ws.send(JSON.stringify({ type: 'error', text: 'Лобби заполнено (макс. 2)' }));
           }
           lobby.players.push({ id: client.user.id, username: client.user.username, ws });
@@ -293,7 +273,6 @@ wss.on('connection', (ws) => {
           if (!client?.lobbyId) return;
           const lobby = lobbies.get(client.lobbyId);
           if (lobby && msg.winnerTeam) {
-            // Обновляем победы в БД
             for (const p of lobby.players) {
               if (p.team === msg.winnerTeam) {
                 users.updateOne({ _id: new ObjectId(p.id) }, { $inc: { wins: 1 } }).catch(() => {});
@@ -322,6 +301,17 @@ wss.on('connection', (ws) => {
   });
 });
 
+// ========== Статистика каждые 10 секунд ==========
+setInterval(() => {
+  const mem = process.memoryUsage();
+  const heapUsedMB = Math.round(mem.heapUsed / 1024 / 1024);
+  const rssMB = Math.round(mem.rss / 1024 / 1024);
+  const cpuUsage = process.cpuUsage();
+  const cpuPercent = (cpuUsage.user + cpuUsage.system) / 1000000; // секунды
+  console.log(`[STAT] RAM: heap ${heapUsedMB} MB / rss ${rssMB} MB (limit ~512 MB) | CPU user+system last tick: ${cpuPercent.toFixed(2)}s`);
+}, 10000);
+
+// Запуск
 connectDB().then(() => {
   server.listen(process.env.PORT || 3000, () => console.log('Сервер запущен'));
 });
