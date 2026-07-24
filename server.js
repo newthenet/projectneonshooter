@@ -5,7 +5,7 @@ const WebSocket = require('ws');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
-const mongoose = require('mongoose');
+const { MongoClient, ObjectId } = require('mongodb');
 
 const app = express();
 const server = http.createServer(app);
@@ -17,55 +17,51 @@ const NEON_PASSWORD = process.env.NEON_PASSWORD || 'pnshooter888Qcod5';
 const NEON_HASH = bcrypt.hashSync(NEON_PASSWORD, 10);
 
 if (!MONGODB_URI) {
-  console.error('ОШИБКА: не задана переменная MONGODB_URI');
+  console.error('MONGODB_URI не задан');
   process.exit(1);
 }
 
-// ==================== Модели ====================
-const UserSchema = new mongoose.Schema({
-  username: { type: String, unique: true, required: true },
-  password: { type: String, required: true },
-  is_neon: { type: Boolean, default: false },
-  wins: { type: Number, default: 0 }
-});
-const User = mongoose.model('User', UserSchema);
+let db, users, maps;
 
-const MapSchema = new mongoose.Schema({
-  name: String,
-  author_id: mongoose.Schema.Types.ObjectId,
-  data: Object,
-  created_at: { type: Date, default: Date.now }
-});
-const Map = mongoose.model('Map', MapSchema);
-
-// ==================== Подключение к MongoDB с повторами ====================
+// Подключение к MongoDB (лёгкое)
 async function connectDB() {
+  const client = new MongoClient(MONGODB_URI, {
+    serverSelectionTimeoutMS: 5000,
+    connectTimeoutMS: 5000,
+  });
   for (let i = 0; i < 5; i++) {
     try {
-      await mongoose.connect(MONGODB_URI, {
-        serverSelectionTimeoutMS: 5000,
-        connectTimeoutMS: 5000
-      });
-      console.log('MongoDB подключена');
-      // Создаём аккаунт Neon, если нет
-      if (!await User.findOne({ is_neon: true })) {
-        await User.create({ username: 'Neon', password: NEON_HASH, is_neon: true, wins: 0 });
-        console.log('Аккаунт Neon создан');
+      await client.connect();
+      db = client.db('projectneon');
+      users = db.collection('users');
+      maps = db.collection('maps');
+
+      // Индексы
+      await users.createIndex({ username: 1 }, { unique: true });
+      await maps.createIndex({ author_id: 1 });
+
+      // Создаём Neon, если нет
+      const neon = await users.findOne({ is_neon: true });
+      if (!neon) {
+        await users.insertOne({
+          username: 'Neon',
+          password: NEON_HASH,
+          is_neon: true,
+          wins: 0,
+        });
       }
+      console.log('MongoDB готова');
       return;
     } catch (err) {
-      console.error(`Попытка ${i + 1}: ошибка MongoDB:`, err.message);
-      if (i < 4) {
-        console.log('Жду 3 секунды перед повторной попыткой...');
-        await new Promise(resolve => setTimeout(resolve, 3000));
-      }
+      console.error(`Попытка ${i + 1}:`, err.message);
+      if (i < 4) await new Promise(r => setTimeout(r, 3000));
     }
   }
-  console.error('Не удалось подключиться к MongoDB после 5 попыток');
+  console.error('Не удалось подключиться к MongoDB');
   process.exit(1);
 }
 
-// ==================== Middleware ====================
+// Middleware
 app.use(express.json());
 app.use(express.static('client'));
 
@@ -73,24 +69,29 @@ function auth(req, res, next) {
   const token = req.headers.authorization?.split(' ')[1];
   if (!token) return res.status(401).json({ error: 'No token' });
   try {
-    req.userId = jwt.verify(token, JWT_SECRET).id;
+    req.userId = new ObjectId(jwt.verify(token, JWT_SECRET).id);
     next();
   } catch {
     res.status(401).json({ error: 'Invalid token' });
   }
 }
 
-// ==================== REST API ====================
+// ==================== API ====================
 app.post('/api/register', async (req, res) => {
   try {
     const { username, password } = req.body;
     if (!username || !password) return res.status(400).json({ error: 'Fields required' });
-    if (await User.findOne({ username })) return res.status(409).json({ error: 'Username exists' });
-    const user = await User.create({ username, password: bcrypt.hashSync(password, 10) });
-    const token = jwt.sign({ id: user._id }, JWT_SECRET);
-    res.json({ token, user: { id: user._id, username, is_neon: false } });
+    const exists = await users.findOne({ username });
+    if (exists) return res.status(409).json({ error: 'Username exists' });
+    const result = await users.insertOne({
+      username,
+      password: bcrypt.hashSync(password, 10),
+      is_neon: false,
+      wins: 0,
+    });
+    const token = jwt.sign({ id: result.insertedId }, JWT_SECRET);
+    res.json({ token, user: { id: result.insertedId, username, is_neon: false } });
   } catch (e) {
-    console.error('Register error:', e);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -98,20 +99,20 @@ app.post('/api/register', async (req, res) => {
 app.post('/api/login', async (req, res) => {
   try {
     const { username, password } = req.body;
-    const user = await User.findOne({ username });
+    const user = await users.findOne({ username });
     if (!user || !bcrypt.compareSync(password, user.password))
       return res.status(401).json({ error: 'Bad credentials' });
     const token = jwt.sign({ id: user._id }, JWT_SECRET);
     res.json({ token, user: { id: user._id, username, is_neon: user.is_neon } });
   } catch (e) {
-    console.error('Login error:', e);
     res.status(500).json({ error: 'Server error' });
   }
 });
 
 app.get('/api/leaderboard', async (req, res) => {
   try {
-    const top = await User.find({}, 'username wins').sort({ wins: -1 }).limit(50);
+    const top = await users.find({}, { projection: { username: 1, wins: 1 } })
+      .sort({ wins: -1 }).limit(50).toArray();
     res.json(top);
   } catch (e) {
     res.status(500).json({ error: 'Server error' });
@@ -119,50 +120,32 @@ app.get('/api/leaderboard', async (req, res) => {
 });
 
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', db: mongoose.connection.readyState === 1 });
-});
-
-app.post('/api/maps', auth, async (req, res) => {
-  try {
-    const user = await User.findById(req.userId);
-    if (!user?.is_neon) return res.status(403).json({ error: 'Neon only' });
-    await Map.create({ name: req.body.name, author_id: req.userId, data: req.body.data });
-    res.json({ success: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.get('/api/maps', auth, async (req, res) => {
-  try {
-    res.json(await Map.find({}, 'name created_at'));
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.get('/api/maps/:id', auth, async (req, res) => {
-  try {
-    const map = await Map.findById(req.params.id);
-    if (!map) return res.status(404).json({ error: 'Not found' });
-    res.json(map);
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  res.json({
+    status: 'ok',
+    memory: process.memoryUsage(),
+    db: !!(db && db.topology?.isConnected()),
+  });
 });
 
 app.get('*', (req, res) => res.sendFile(__dirname + '/client/index.html'));
 
 // ==================== WebSocket ====================
-const clients = new Map();
+const clients = new Map();   // ws -> { user, lobbyId }
 const lobbies = new Map();
 
 function sendLobbyList(ws) {
   const list = [];
-  for (const [id, l] of lobbies) {
-    if (l.state === 'waiting') list.push({ id, host: l.players[0]?.username, players: l.players.length });
+  for (const [id, lobby] of lobbies) {
+    if (lobby.state === 'waiting')
+      list.push({ id, host: lobby.players[0]?.username, players: lobby.players.length });
   }
-  try { ws.send(JSON.stringify({ type: 'lobby_list', lobbies: list })); } catch (e) {}
+  try { ws.send(JSON.stringify({ type: 'lobby_list', lobbies: list })); } catch {}
 }
 
 function updateLobbyPlayers(lobby) {
   const players = lobby.players.map(p => ({ id: p.id, username: p.username }));
   for (const p of lobby.players) {
-    try { p.ws.send(JSON.stringify({ type: 'lobby_update', players })); } catch (e) {}
+    try { p.ws.send(JSON.stringify({ type: 'lobby_update', players })); } catch {}
   }
 }
 
@@ -170,31 +153,25 @@ wss.on('connection', (ws) => {
   ws.on('message', (raw) => {
     let msg;
     try { msg = JSON.parse(raw); } catch { return; }
-
     try {
       switch (msg.type) {
         case 'auth': {
           const dec = jwt.verify(msg.token, JWT_SECRET);
-          User.findById(dec.id)
+          const userId = new ObjectId(dec.id);
+          users.findOne({ _id: userId })
             .then(user => {
-              if (!user) {
-                ws.send(JSON.stringify({ type: 'error', text: 'Пользователь не найден' }));
-                return;
-              }
+              if (!user) return ws.send(JSON.stringify({ type: 'error', text: 'User not found' }));
               clients.set(ws, {
                 user: { id: user._id.toString(), username: user.username, is_neon: user.is_neon },
-                lobbyId: null
+                lobbyId: null,
               });
               ws.send(JSON.stringify({
                 type: 'auth_ok',
-                user: { id: user._id.toString(), username: user.username, is_neon: user.is_neon }
+                user: { id: user._id.toString(), username: user.username, is_neon: user.is_neon },
               }));
               sendLobbyList(ws);
             })
-            .catch(err => {
-              console.error('Auth DB error:', err);
-              ws.send(JSON.stringify({ type: 'error', text: 'Ошибка базы данных' }));
-            });
+            .catch(() => ws.send(JSON.stringify({ type: 'error', text: 'DB error' })));
           break;
         }
         case 'lobby_list':
@@ -213,7 +190,7 @@ wss.on('connection', (ws) => {
             id: lobbyId,
             host: client.user.id,
             players: [{ id: client.user.id, username: client.user.username, ws }],
-            state: 'waiting'
+            state: 'waiting',
           };
           lobbies.set(lobbyId, lobby);
           client.lobbyId = lobbyId;
@@ -255,7 +232,7 @@ wss.on('connection', (ws) => {
           if (!lobby || lobby.host !== client.user.id || lobby.players.length < 2) return;
           lobby.state = 'starting';
           for (const p of lobby.players) {
-            try { p.ws.send(JSON.stringify({ type: 'game_starting', delay: 5 })); } catch (e) {}
+            try { p.ws.send(JSON.stringify({ type: 'game_starting', delay: 5 })); } catch {}
           }
           break;
         }
@@ -264,7 +241,6 @@ wss.on('connection', (ws) => {
       console.error('WS error:', err.message);
     }
   });
-
   ws.on('close', () => {
     const client = clients.get(ws);
     if (client?.lobbyId) {
@@ -279,9 +255,13 @@ wss.on('connection', (ws) => {
   });
 });
 
-// ==================== Запуск ====================
+// Запуск
 connectDB().then(() => {
   server.listen(process.env.PORT || 3000, () => {
-    console.log('Project Neon server running');
+    console.log('Сервер запущен');
+    setInterval(() => {
+      const mem = process.memoryUsage();
+      console.log(`RAM: ${Math.round(mem.heapUsed / 1024 / 1024)} MB`);
+    }, 30000);
   });
 });
