@@ -113,9 +113,8 @@
     let token = localStorage.getItem('token');
     let user = null, ws = null, lobbyId = null, inLobby = false;
     let peers = {}, dataChannels = {};
-    let connectedPeers = 0, expectedPeers = 0; // для отслеживания готовности P2P
+    let connectedPeers = 0, expectedPeers = 0;
 
-    // Игровое состояние
     const game = {
       scene:null, camera:null, renderer:null,
       players:{}, myId:null, myTeam:null,
@@ -126,7 +125,6 @@
       lastShot:0, shootCooldown:0.3
     };
 
-    // Редактор
     const editor = {
       scene:null, camera:null, renderer:null, controls:null,
       objects:[], spawns:[], bombSite:null,
@@ -173,7 +171,7 @@
       }
     }
 
-    // ==================== СЕТЬ (WebSocket) ====================
+    // ==================== СЕТЬ ====================
     function connectWS() {
       if (ws) { ws.onclose = null; ws.close(); }
       ws = new WebSocket(WS_URL);
@@ -281,10 +279,14 @@
 
     // ==================== P2P ИГРА ====================
     function startP2PGame(players, mapData) {
-      // Сброс соединений
-      Object.values(peers).forEach(p => { try{p.destroy()}catch(e){} });
+      // Уничтожаем старые пиры
+      Object.keys(peers).forEach(id => {
+        try { peers[id].destroy(); } catch(e) {}
+        delete peers[id];
+        delete dataChannels[id];
+      });
       peers = {}; dataChannels = {}; connectedPeers = 0;
-      expectedPeers = players.length - 1; // без себя
+      expectedPeers = players.length - 1;
 
       game.players = {};
       players.forEach(p => { game.players[p.id] = { id:p.id, username:p.username, team:p.team, health:100, mesh:null }; });
@@ -304,7 +306,6 @@
         if (p.id !== user.id) createPeer(p.id, true);
       });
 
-      // Ждём клика для захвата мыши
       clickOverlay.style.display = 'flex';
       clickOverlay.onclick = () => {
         clickOverlay.style.display = 'none';
@@ -312,17 +313,15 @@
         document.body.focus();
       };
 
-      // Запускаем раунд, когда все пиры подключатся (или через таймаут)
-      checkAllPeersConnected();
+      // Ждём подключения всех пиров
+      waitForPeers();
     }
 
-    function checkAllPeersConnected() {
+    function waitForPeers() {
       if (connectedPeers >= expectedPeers) {
-        setTimeout(() => {
-          if (!game.gameOver) startRound();
-        }, 1000);
+        setTimeout(() => { if (!game.gameOver) startRound(); }, 1000);
       } else {
-        setTimeout(checkAllPeersConnected, 100);
+        setTimeout(waitForPeers, 100);
       }
     }
 
@@ -363,17 +362,18 @@
       if (spawn) game.camera.position.set(spawn.x, spawn.y, spawn.z);
     }
 
-    // ----- WebRTC -----
+    // ==================== WebRTC (исправленный) ====================
     function createPeer(peerId, initiator) {
+      if (peers[peerId]) return; // уже создан
       const peer = new SimplePeer({ initiator, config:{ iceServers:[{ urls:'stun:stun.l.google.com:19302' }] } });
-      peer.on('signal', data => sendWS({ type:'signal', target:peerId, data }));
+      peer.on('signal', data => {
+        // Отправляем сигнал только если peer ещё не уничтожен
+        if (!peer.destroyed) sendWS({ type:'signal', target:peerId, data });
+      });
       peer.on('connect', () => {
+        console.log('P2P connected to', peerId);
         dataChannels[peerId] = peer;
-        peer.on('data', data => {
-          try { handleP2PMessage(peerId, JSON.parse(data.toString())); } catch(e){}
-        });
         connectedPeers++;
-        console.log(`P2P connected to ${peerId} (${connectedPeers}/${expectedPeers})`);
         // Отправляем начальное состояние
         broadcastP2P({
           type:'player_state', id:game.myId,
@@ -382,18 +382,38 @@
           health: game.health, ammo: game.ammo, team: game.myTeam
         });
       });
+      peer.on('data', data => {
+        try { handleP2PMessage(peerId, JSON.parse(data.toString())); } catch(e){}
+      });
       peer.on('error', err => console.error('Peer error:', err));
+      peer.on('close', () => {
+        delete dataChannels[peerId];
+        delete peers[peerId];
+        connectedPeers--;
+      });
       peers[peerId] = peer;
     }
 
     function handleSignal(from, data) {
-      if (!peers[from]) createPeer(from, false);
-      peers[from].signal(data);
+      if (!peers[from]) {
+        // Если пира ещё нет, создаём как не-инициатор
+        createPeer(from, false);
+      }
+      const peer = peers[from];
+      if (peer && !peer.destroyed) {
+        try {
+          peer.signal(data);
+        } catch(e) {
+          console.error('Signal error:', e);
+        }
+      }
     }
 
     function broadcastP2P(msg) {
       const raw = JSON.stringify(msg);
-      Object.values(dataChannels).forEach(ch => { if (ch.connected) ch.send(raw); });
+      Object.values(dataChannels).forEach(ch => {
+        if (ch && ch.connected) ch.send(raw);
+      });
     }
 
     function handleP2PMessage(from, msg) {
@@ -409,7 +429,6 @@
       }
     }
 
-    // Отправка своего состояния 20 раз/с
     setInterval(() => {
       if (!game.roundActive || !game.camera) return;
       broadcastP2P({
@@ -475,7 +494,6 @@
         return;
       }
       if (game.round === 4) {
-        // Смена сторон
         game.myTeam = game.myTeam==='t'?'ct':'t';
         Object.values(game.players).forEach(p => p.team = p.team==='t'?'ct':'t');
       }
@@ -500,11 +518,12 @@
       document.exitPointerLock();
       if (game.renderer) { game.renderer.dispose(); document.getElementById('gameCanvas').innerHTML=''; }
       game.scene=null; game.camera=null; game.renderer=null;
-      Object.values(peers).forEach(p => { try{p.destroy()}catch(e){} }); peers={}; dataChannels={};
+      Object.keys(peers).forEach(id => { try { peers[id].destroy(); } catch(e) {} });
+      peers={}; dataChannels={}; connectedPeers=0;
       showMenu();
     }
 
-    // ==================== СТРЕЛЬБА, УРОН, ПЕРЕЗАРЯДКА ====================
+    // ==================== СТРЕЛЬБА И ЧАТ ====================
     function shoot() {
       if (!game.roundActive || game.ammo<=0 || game.reloading || game.gameOver) return;
       const now = performance.now()/1000;
@@ -515,7 +534,7 @@
       const spread = 0.02;
       dir.x += (Math.random()-0.5)*spread; dir.y += (Math.random()-0.5)*spread; dir.z += (Math.random()-0.5)*spread;
       dir.normalize();
-      game.camera.rotation.x += 0.005; // отдача
+      game.camera.rotation.x += 0.005;
       const raycaster = new THREE.Raycaster(game.camera.position.clone(), dir);
       const intersects = raycaster.intersectObjects(game.scene.children, true);
       for (const inter of intersects) {
@@ -613,7 +632,6 @@
       if (game.mouseLocked) {
         game.camera.rotation.y -= e.movementX * 0.002;
         game.camera.rotation.x -= e.movementY * 0.002;
-        // Ограничение вертикального угла
         game.camera.rotation.x = Math.max(-Math.PI/2.5, Math.min(Math.PI/2.5, game.camera.rotation.x));
       }
     });
@@ -627,9 +645,126 @@
       }
     });
 
-    // ==================== РЕДАКТОР КАРТ (без изменений) ====================
-    // ... (весь код редактора остаётся прежним, как в предыдущем полном ответе) ...
-    // Для экономии места я не дублирую, он идентичен последней рабочей версии.
+    // ==================== РЕДАКТОР КАРТ ====================
+    function initEditor() {
+      editor.scene = new THREE.Scene(); editor.scene.background = new THREE.Color(0x87ceeb);
+      editor.camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
+      editor.renderer = new THREE.WebGLRenderer({ antialias:true });
+      editor.renderer.setSize(window.innerWidth, window.innerHeight);
+      document.getElementById('editorCanvas').appendChild(editor.renderer.domElement);
+      editor.controls = new THREE.OrbitControls(editor.camera, editor.renderer.domElement);
+      editor.controls.enableDamping = true; editor.controls.target.set(0,1,0);
+      editor.camera.position.set(10,10,10); editor.controls.update();
+      editor.objects = []; editor.spawns = []; editor.bombSite = null;
+      editor.renderer.domElement.addEventListener('click', onEditorClick);
+      function animate() { requestAnimationFrame(animate); if (editor.renderer) { editor.controls.update(); editor.renderer.render(editor.scene, editor.camera); } }
+      animate();
+    }
+
+    function onEditorClick(event) {
+      const rect = editor.renderer.domElement.getBoundingClientRect();
+      const mouse = new THREE.Vector2(((event.clientX - rect.left) / rect.width) * 2 - 1, -((event.clientY - rect.top) / rect.height) * 2 + 1);
+      const raycaster = new THREE.Raycaster(); raycaster.setFromCamera(mouse, editor.camera);
+      const intersects = raycaster.intersectObjects(editor.scene.children, true);
+      if (intersects.length > 0) {
+        let obj = intersects[0].object;
+        while (obj && !obj.userData.editorType) obj = obj.parent;
+        if (obj && obj.userData.editorType) selectObject(obj); else deselectObject();
+      } else deselectObject();
+    }
+
+    function selectObject(obj) {
+      if (editor.selectedObject === obj) return; deselectObject();
+      editor.selectedObject = obj; obj.userData.originalColor = obj.material.color.getHex(); obj.material.color.set(0x00ff00);
+      document.getElementById('editorMsg').style.display = 'block';
+    }
+    function deselectObject() {
+      if (editor.selectedObject) { editor.selectedObject.material.color.set(editor.selectedObject.userData.originalColor); editor.selectedObject = null; document.getElementById('editorMsg').style.display = 'none'; }
+    }
+
+    document.addEventListener('keydown', (e) => {
+      if (!screens.editor.classList.contains('active') || !editor.selectedObject) return;
+      if (e.code.startsWith('Arrow')) {
+        e.preventDefault();
+        const move = 0.5;
+        if (e.code === 'ArrowUp') editor.selectedObject.position.z -= move;
+        if (e.code === 'ArrowDown') editor.selectedObject.position.z += move;
+        if (e.code === 'ArrowLeft') editor.selectedObject.position.x -= move;
+        if (e.code === 'ArrowRight') editor.selectedObject.position.x += move;
+        updateEditorData(editor.selectedObject);
+      }
+    });
+
+    function updateEditorData(obj) {
+      const idx = obj.userData.editorIndex;
+      if (obj.userData.editorType === 'box' || obj.userData.editorType === 'wall') {
+        editor.objects[idx].data = { ...editor.objects[idx].data, x: obj.position.x, y: obj.position.y, z: obj.position.z };
+      } else if (obj.userData.editorType === 'spawn') {
+        editor.spawns[idx].data = { ...editor.spawns[idx].data, x: obj.position.x, y: obj.position.y, z: obj.position.z };
+      } else if (obj.userData.editorType === 'bomb') {
+        editor.bombSite.data = { ...editor.bombSite.data, x: obj.position.x, y: obj.position.y, z: obj.position.z };
+      }
+    }
+
+    function editorAddBox() {
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(2,2,2), new THREE.MeshLambertMaterial({color:0x8B7355}));
+      mesh.position.set(0,1,0); mesh.userData = { editorType:'box', editorIndex: editor.objects.length };
+      editor.scene.add(mesh); editor.objects.push({ type:'box', mesh, data:{ x:0,y:1,z:0,w:2,h:2,d:2 } });
+    }
+    function editorAddWall() {
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(1,4,10), new THREE.MeshLambertMaterial({color:0x888888}));
+      mesh.position.set(0,2,0); mesh.userData = { editorType:'wall', editorIndex: editor.objects.length };
+      editor.scene.add(mesh); editor.objects.push({ type:'wall', mesh, data:{ x:0,y:2,z:0,w:1,h:4,d:10 } });
+    }
+    function editorAddSpawn(team) {
+      const color = team === 't' ? 0xff0000 : 0x0000ff;
+      const marker = new THREE.Mesh(new THREE.SphereGeometry(0.5), new THREE.MeshBasicMaterial({color}));
+      marker.position.set(0,1,0); marker.userData = { editorType:'spawn', editorIndex: editor.spawns.length, team };
+      editor.scene.add(marker); editor.spawns.push({ team, mesh:marker, data:{ team, x:0,y:1,z:0 } });
+    }
+    function editorAddBombSite() {
+      if (editor.bombSite) editor.scene.remove(editor.bombSite.mesh);
+      const marker = new THREE.Mesh(new THREE.BoxGeometry(1,0.2,1), new THREE.MeshBasicMaterial({color:0xffff00}));
+      marker.position.set(0,0,0); marker.userData = { editorType:'bomb', editorIndex:0 };
+      editor.scene.add(marker); editor.bombSite = { mesh:marker, data:{ x:0,y:0,z:0 } };
+    }
+    function editorSaveMap() {
+      const name = prompt('Название карты:');
+      if (!name) return;
+      const data = { spawns: editor.spawns.map(s => s.data), bombSite: editor.bombSite?.data || {x:0,y:0,z:0}, objects: editor.objects.map(o => o.data) };
+      fetch('/api/maps', { method:'POST', headers:{'Content-Type':'application/json','Authorization':'Bearer '+token}, body: JSON.stringify({name, data}) })
+        .then(r=>r.json()).then(() => alert('Сохранено!'));
+    }
+    function editorLoadMap() {
+      fetch('/api/maps', { headers:{'Authorization':'Bearer '+token} }).then(r=>r.json()).then(maps => {
+        const id = prompt('ID карты:\n' + maps.map(m => `${m._id}: ${m.name}`).join('\n'));
+        if (!id) return;
+        fetch('/api/maps/'+id, { headers:{'Authorization':'Bearer '+token} }).then(r=>r.json()).then(m => {
+          while(editor.scene.children.length) editor.scene.remove(editor.scene.children[0]);
+          editor.objects = []; editor.spawns = []; editor.bombSite = null;
+          m.data.objects?.forEach(obj => {
+            let mesh;
+            if (obj.type === 'box') mesh = new THREE.Mesh(new THREE.BoxGeometry(obj.w,obj.h,obj.d), new THREE.MeshLambertMaterial({color:0x8B7355}));
+            else if (obj.type === 'wall') mesh = new THREE.Mesh(new THREE.BoxGeometry(obj.w,obj.h,obj.d), new THREE.MeshLambertMaterial({color:0x888888}));
+            if (mesh) { mesh.position.set(obj.x,obj.y,obj.z); mesh.userData = { editorType:obj.type, editorIndex: editor.objects.length }; editor.scene.add(mesh); editor.objects.push({ type:obj.type, mesh, data:obj }); }
+          });
+          m.data.spawns?.forEach(s => {
+            const color = s.team === 't' ? 0xff0000 : 0x0000ff;
+            const marker = new THREE.Mesh(new THREE.SphereGeometry(0.5), new THREE.MeshBasicMaterial({color}));
+            marker.position.set(s.x,s.y,s.z); marker.userData = { editorType:'spawn', editorIndex: editor.spawns.length, team: s.team };
+            editor.scene.add(marker); editor.spawns.push({ team:s.team, mesh:marker, data:s });
+          });
+          if (m.data.bombSite) {
+            const marker = new THREE.Mesh(new THREE.BoxGeometry(1,0.2,1), new THREE.MeshBasicMaterial({color:0xffff00}));
+            marker.position.set(m.data.bombSite.x, m.data.bombSite.y, m.data.bombSite.z);
+            marker.userData = { editorType:'bomb' }; editor.scene.add(marker);
+            editor.bombSite = { mesh:marker, data:m.data.bombSite };
+          }
+        });
+      });
+    }
+    function openEditor() { showScreen('editor'); if (!editor.renderer) initEditor(); }
+    function closeEditor() { showMenu(); }
 
     // Старт
     if (token) connectWS(); else { showScreen('menu'); authBlock.style.display='block'; }
