@@ -364,17 +364,20 @@
 
     // ==================== WebRTC (исправленный) ====================
     function createPeer(peerId, initiator) {
-      if (peers[peerId]) return; // уже создан
+      if (peers[peerId] && !peers[peerId].destroyed) return;
+      if (peers[peerId]) {
+        try { peers[peerId].destroy(); } catch(e) {}
+      }
       const peer = new SimplePeer({ initiator, config:{ iceServers:[{ urls:'stun:stun.l.google.com:19302' }] } });
       peer.on('signal', data => {
-        // Отправляем сигнал только если peer ещё не уничтожен
-        if (!peer.destroyed) sendWS({ type:'signal', target:peerId, data });
+        if (!peer.destroyed && !peer.connected) {
+          sendWS({ type:'signal', target:peerId, data });
+        }
       });
       peer.on('connect', () => {
         console.log('P2P connected to', peerId);
         dataChannels[peerId] = peer;
         connectedPeers++;
-        // Отправляем начальное состояние
         broadcastP2P({
           type:'player_state', id:game.myId,
           pos: game.camera.position.toArray(),
@@ -395,25 +398,19 @@
     }
 
     function handleSignal(from, data) {
-      if (!peers[from]) {
-        // Если пира ещё нет, создаём как не-инициатор
-        createPeer(from, false);
-      }
+      if (!peers[from]) createPeer(from, false);
       const peer = peers[from];
-      if (peer && !peer.destroyed) {
-        try {
-          peer.signal(data);
-        } catch(e) {
-          console.error('Signal error:', e);
-        }
+      if (!peer || peer.destroyed || peer.connected) return;
+      try {
+        peer.signal(data);
+      } catch (e) {
+        console.warn('Signal error (ignored):', e.message);
       }
     }
 
     function broadcastP2P(msg) {
       const raw = JSON.stringify(msg);
-      Object.values(dataChannels).forEach(ch => {
-        if (ch && ch.connected) ch.send(raw);
-      });
+      Object.values(dataChannels).forEach(ch => { if (ch && ch.connected) ch.send(raw); });
     }
 
     function handleP2PMessage(from, msg) {
@@ -626,6 +623,19 @@
         if (chatInput.style.display==='block') chatInput.focus();
       }
       if (e.code === 'KeyL' && screens.game.classList.contains('active')) { if (confirm('Сдаться?')) leaveGame(); }
+      // Быстрый чат V+...
+      if (e.code === 'KeyV' && screens.game.classList.contains('active')) {
+        const quickHandler = (ev) => {
+          if (ev.code === 'KeyT') broadcastP2P({ type:'chat', text:'Hello', from: user.username });
+          else if (ev.code === 'KeyY') broadcastP2P({ type:'chat', text:'Run', from: user.username });
+          else if (ev.code === 'KeyU') broadcastP2P({ type:'chat', text:'Help me', from: user.username });
+          else if (ev.code === 'KeyF') broadcastP2P({ type:'chat', text:'Planting', from: user.username });
+          else if (ev.code === 'KeyG') broadcastP2P({ type:'chat', text:'Defusing', from: user.username });
+          else if (ev.code === 'KeyH') broadcastP2P({ type:'chat', text:'Sorry', from: user.username });
+          document.removeEventListener('keydown', quickHandler);
+        };
+        document.addEventListener('keydown', quickHandler);
+      }
     });
     document.addEventListener('keyup', e => game.keys[e.code] = false);
     document.addEventListener('mousemove', e => {
