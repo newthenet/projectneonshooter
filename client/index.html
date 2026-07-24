@@ -54,8 +54,9 @@
     let ws = null;
     let currentLobbyId = null;
     let inLobby = false;
+    let reconnectTimeout = null;   // таймер переподключения
 
-    // UI элементы
+    // UI
     const menuScreen = document.getElementById('menuScreen');
     const lobbyScreen = document.getElementById('lobbyScreen');
     const authForms = document.getElementById('authForms');
@@ -75,7 +76,16 @@
 
     // ==================== WebSocket ====================
     function connectWS() {
-      if (ws) { ws.onclose = null; ws.close(); }
+      // Очищаем старый таймер и сокет
+      if (reconnectTimeout) { clearTimeout(reconnectTimeout); reconnectTimeout = null; }
+      if (ws) {
+        ws.onclose = null;
+        ws.onerror = null;
+        ws.onmessage = null;
+        ws.close();
+        ws = null;
+      }
+
       ws = new WebSocket(SERVER);
       ws.onopen = () => {
         console.log('WebSocket открыт');
@@ -87,12 +97,15 @@
       ws.onmessage = (e) => {
         let msg;
         try { msg = JSON.parse(e.data); } catch(ex) { console.error('Ошибка парсинга:', ex); return; }
-        console.log('Получено сообщение:', msg.type, msg);
+        console.log('Получено:', msg.type, msg);
         handleMessage(msg);
       };
       ws.onclose = () => {
-        console.log('WebSocket закрыт, переподключение через 3 сек');
-        setTimeout(connectWS, 3000);
+        console.log('WebSocket закрыт');
+        // Если вышли из аккаунта (token == null), не переподключаемся
+        if (!token) return;
+        console.log('Переподключение через 3 сек');
+        reconnectTimeout = setTimeout(connectWS, 3000);
       };
       ws.onerror = (err) => console.error('WebSocket ошибка:', err);
     }
@@ -101,11 +114,11 @@
       switch(msg.type) {
         case 'auth_ok':
           user = msg.user;
-          console.log('Авторизация успешна:', user);
+          console.log('Авторизован:', user);
           showMainMenu();
           break;
         case 'lobby_list':
-          console.log('Получен список лобби:', msg.lobbies);
+          console.log('Список лобби:', msg.lobbies);
           if (!inLobby) renderLobbyList(msg.lobbies);
           break;
         case 'lobby_created':
@@ -114,13 +127,11 @@
           console.log('Лобби создано, ID:', currentLobbyId);
           myLobby.classList.remove('hidden');
           lobbyIdSpan.textContent = currentLobbyId;
-          // Ждём lobby_update, который должен прийти сразу после
           break;
         case 'lobby_update':
-          console.log('Обновление игроков в лобби:', msg.players);
+          console.log('Игроки лобби:', msg.players);
           renderPlayers(msg.players);
           myLobby.classList.remove('hidden');
-          // Показать кнопку старта только хосту
           if (msg.players.length > 0 && msg.players[0].id === user.id) {
             startBtn.style.display = 'block';
           } else {
@@ -128,7 +139,7 @@
           }
           break;
         case 'game_starting':
-          alert(`Игра начнётся через ${msg.delay} секунд`);
+          alert(`Игра начнётся через ${msg.delay} сек`);
           break;
         case 'game_started':
           alert('Игра началась!');
@@ -136,17 +147,15 @@
         case 'error':
           alert(msg.text);
           break;
-        default:
-          console.log('Неизвестный тип сообщения:', msg.type);
       }
     }
 
     function send(obj) {
       if (ws?.readyState === WebSocket.OPEN) {
-        console.log('Отправка сообщения:', obj);
+        console.log('Отправка:', obj);
         ws.send(JSON.stringify(obj));
       } else {
-        console.error('WebSocket не открыт, невозможно отправить');
+        console.error('WebSocket не открыт');
       }
     }
 
@@ -154,17 +163,17 @@
     function login() {
       const u = document.getElementById('loginUser').value.trim();
       const p = document.getElementById('loginPass').value;
-      console.log('Попытка входа:', u);
+      console.log('Логин:', u);
       fetch('/api/login', {
         method:'POST', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({username:u, password:p})
       }).then(r=>r.json()).then(d => {
-        console.log('Ответ сервера на вход:', d);
+        console.log('Ответ сервера:', d);
         if(d.token) {
           token = d.token;
           localStorage.setItem('token', token);
           user = d.user;
-          connectWS();
+          connectWS();   // подключаемся с новым токеном
         } else {
           alert(d.error || 'Ошибка входа');
         }
@@ -179,7 +188,7 @@
         method:'POST', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({username:u, password:p})
       }).then(r=>r.json()).then(d => {
-        console.log('Ответ регистрации:', d);
+        console.log('Ответ:', d);
         if(d.token) {
           token = d.token;
           localStorage.setItem('token', token);
@@ -208,7 +217,7 @@
     }
 
     function createLobby() {
-      console.log('Запрос на создание лобби');
+      console.log('Запрос создания лобби');
       send({ type:'create_lobby' });
     }
 
@@ -226,7 +235,17 @@
       token = null;
       localStorage.removeItem('token');
       user = null;
-      if (ws) { ws.onclose = null; ws.close(); }
+
+      // Останавливаем таймер переподключения
+      if (reconnectTimeout) { clearTimeout(reconnectTimeout); reconnectTimeout = null; }
+
+      // Закрываем WebSocket
+      if (ws) {
+        ws.onclose = null;   // убираем автопереподключение
+        ws.close();
+        ws = null;
+      }
+
       authForms.classList.remove('hidden');
       userInfo.classList.add('hidden');
       showScreen(menuScreen);
@@ -242,7 +261,7 @@
         const btn = document.createElement('button');
         btn.textContent = `${l.host} (${l.players}/10)`;
         btn.onclick = () => {
-          console.log('Присоединяюсь к лобби', l.id);
+          console.log('Присоединение к лобби', l.id);
           send({ type:'join_lobby', lobbyId: l.id });
           inLobby = true;
           currentLobbyId = l.id;
