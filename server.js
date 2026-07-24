@@ -23,7 +23,6 @@ if (!MONGODB_URI) {
 
 let db, users, maps;
 
-// Подключение к MongoDB (лёгкое)
 async function connectDB() {
   const client = new MongoClient(MONGODB_URI, {
     serverSelectionTimeoutMS: 5000,
@@ -36,11 +35,9 @@ async function connectDB() {
       users = db.collection('users');
       maps = db.collection('maps');
 
-      // Индексы
       await users.createIndex({ username: 1 }, { unique: true });
       await maps.createIndex({ author_id: 1 });
 
-      // Создаём Neon, если нет
       const neon = await users.findOne({ is_neon: true });
       if (!neon) {
         await users.insertOne({
@@ -61,7 +58,6 @@ async function connectDB() {
   process.exit(1);
 }
 
-// Middleware
 app.use(express.json());
 app.use(express.static('client'));
 
@@ -76,7 +72,6 @@ function auth(req, res, next) {
   }
 }
 
-// ==================== API ====================
 app.post('/api/register', async (req, res) => {
   try {
     const { username, password } = req.body;
@@ -120,11 +115,32 @@ app.get('/api/leaderboard', async (req, res) => {
 });
 
 app.get('/api/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    memory: process.memoryUsage(),
-    db: !!(db && db.topology?.isConnected()),
-  });
+  res.json({ status: 'ok', memory: process.memoryUsage(), db: !!(db && db.topology?.isConnected()) });
+});
+
+// Карты
+app.post('/api/maps', auth, async (req, res) => {
+  try {
+    const user = await users.findOne({ _id: req.userId });
+    if (!user?.is_neon) return res.status(403).json({ error: 'Neon only' });
+    await maps.insertOne({ name: req.body.name, author_id: req.userId, data: req.body.data, created_at: new Date() });
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/maps', auth, async (req, res) => {
+  try {
+    const list = await maps.find({}, { projection: { name: 1, created_at: 1 } }).toArray();
+    res.json(list);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/maps/:id', auth, async (req, res) => {
+  try {
+    const map = await maps.findOne({ _id: new ObjectId(req.params.id) });
+    if (!map) return res.status(404).json({ error: 'Not found' });
+    res.json(map);
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get('*', (req, res) => res.sendFile(__dirname + '/client/index.html'));
@@ -180,6 +196,7 @@ wss.on('connection', (ws) => {
         case 'create_lobby': {
           const client = clients.get(ws);
           if (!client) return;
+          // Проверка на дубликат
           for (const [id, l] of lobbies) {
             if (l.host === client.user.id && l.state !== 'finished') {
               return ws.send(JSON.stringify({ type: 'error', text: 'У вас уже есть лобби' }));
@@ -205,12 +222,58 @@ wss.on('connection', (ws) => {
           if (!lobby || lobby.state !== 'waiting') {
             return ws.send(JSON.stringify({ type: 'error', text: 'Лобби недоступно' }));
           }
-          if (lobby.players.length >= 10) {
-            return ws.send(JSON.stringify({ type: 'error', text: 'Лобби заполнено' }));
+          if (lobby.players.length >= 2) {   // <-- ЛИМИТ 2 ИГРОКА
+            return ws.send(JSON.stringify({ type: 'error', text: 'Лобби заполнено (макс. 2)' }));
           }
           lobby.players.push({ id: client.user.id, username: client.user.username, ws });
           client.lobbyId = lobby.id;
           updateLobbyPlayers(lobby);
+          break;
+        }
+        case 'set_map': {
+          const client = clients.get(ws);
+          if (!client?.lobbyId) return;
+          const lobby = lobbies.get(client.lobbyId);
+          if (lobby && lobby.host === client.user.id) {
+            lobby.mapData = msg.mapData;
+          }
+          break;
+        }
+        case 'start_game': {
+          const client = clients.get(ws);
+          if (!client?.lobbyId) return;
+          const lobby = lobbies.get(client.lobbyId);
+          if (!lobby || lobby.host !== client.user.id || lobby.players.length < 2) return;
+          lobby.state = 'starting';
+          for (const p of lobby.players) {
+            try { p.ws.send(JSON.stringify({ type: 'game_starting', delay: 5 })); } catch {}
+          }
+          setTimeout(() => {
+            if (lobby.state !== 'starting') return;
+            lobby.state = 'playing';
+            lobby.round = 1;
+            lobby.players.forEach((p, i) => { p.team = i % 2 === 0 ? 't' : 'ct'; });
+            for (const p of lobby.players) {
+              try {
+                p.ws.send(JSON.stringify({
+                  type: 'game_started',
+                  players: lobby.players.map(pl => ({ id: pl.id, username: pl.username, team: pl.team })),
+                  mapData: lobby.mapData || null,
+                }));
+              } catch {}
+            }
+          }, 5000);
+          break;
+        }
+        case 'signal': {
+          const client = clients.get(ws);
+          if (!client?.lobbyId) return;
+          const lobby = lobbies.get(client.lobbyId);
+          if (!lobby) return;
+          const target = lobby.players.find(p => p.id === msg.target);
+          if (target) {
+            try { target.ws.send(JSON.stringify({ type: 'signal', from: client.user.id, data: msg.data })); } catch {}
+          }
           break;
         }
         case 'leave_lobby': {
@@ -225,15 +288,19 @@ wss.on('connection', (ws) => {
           client.lobbyId = null;
           break;
         }
-        case 'start_game': {
+        case 'game_over': {
           const client = clients.get(ws);
           if (!client?.lobbyId) return;
           const lobby = lobbies.get(client.lobbyId);
-          if (!lobby || lobby.host !== client.user.id || lobby.players.length < 2) return;
-          lobby.state = 'starting';
-          for (const p of lobby.players) {
-            try { p.ws.send(JSON.stringify({ type: 'game_starting', delay: 5 })); } catch {}
+          if (lobby && msg.winnerTeam) {
+            // Обновляем победы в БД
+            for (const p of lobby.players) {
+              if (p.team === msg.winnerTeam) {
+                users.updateOne({ _id: new ObjectId(p.id) }, { $inc: { wins: 1 } }).catch(() => {});
+              }
+            }
           }
+          if (lobby) lobbies.delete(client.lobbyId);
           break;
         }
       }
@@ -255,13 +322,6 @@ wss.on('connection', (ws) => {
   });
 });
 
-// Запуск
 connectDB().then(() => {
-  server.listen(process.env.PORT || 3000, () => {
-    console.log('Сервер запущен');
-    setInterval(() => {
-      const mem = process.memoryUsage();
-      console.log(`RAM: ${Math.round(mem.heapUsed / 1024 / 1024)} MB`);
-    }, 30000);
-  });
+  server.listen(process.env.PORT || 3000, () => console.log('Сервер запущен'));
 });
