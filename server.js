@@ -1,3 +1,4 @@
+// server.js
 const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
@@ -145,106 +146,10 @@ app.post('/api/win', auth, async (req, res) => {
 
 app.get('*', (req, res) => res.sendFile(__dirname + '/client/index.html'));
 
-// ==================== Хранилища с максимальной защитой ====================
-let lobbies = new Map();
-let clients = new Map();
-
-// Утилита: гарантирует, что переменная является Map
-function ensureMap(variableName) {
-  if (variableName === 'lobbies') {
-    if (!(lobbies instanceof Map)) {
-      console.error(`⚠️ lobbies имеет тип ${typeof lobbies}, пересоздаём Map`);
-      lobbies = new Map();
-    }
-    return lobbies;
-  }
-  if (variableName === 'clients') {
-    if (!(clients instanceof Map)) {
-      console.error(`⚠️ clients имеет тип ${typeof clients}, пересоздаём Map`);
-      clients = new Map();
-    }
-    return clients;
-  }
-}
-
-// Получение списка ожидающих лобби (без for...of)
-function getWaitingLobbies() {
-  ensureMap('lobbies');
-  const list = [];
-  lobbies.forEach((lobby, id) => {
-    if (lobby.state === 'waiting') {
-      list.push({
-        id,
-        host: lobby.players[0]?.username || 'Unknown',
-        players: lobby.players.length
-      });
-    }
-  });
-  return list;
-}
-
-// Трансляция списка лобби
-function broadcastLobbyList() {
-  try {
-    const list = getWaitingLobbies();
-    ensureMap('clients');
-    clients.forEach((client, ws) => {
-      if (client.user && !client.lobbyId && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'lobby_list', lobbies: list }));
-      }
-    });
-  } catch (err) {
-    console.error('❌ Ошибка в broadcastLobbyList:', err);
-  }
-}
-
-function sendLobbyList(ws) {
-  try {
-    const list = getWaitingLobbies();
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'lobby_list', lobbies: list }));
-    }
-  } catch (err) {
-    console.error('❌ Ошибка в sendLobbyList:', err);
-  }
-}
-
-// Проверка активного лобби у пользователя
-function hasActiveLobby(userId) {
-  ensureMap('lobbies');
-  let found = false;
-  lobbies.forEach((lobby) => {
-    if (lobby.host === userId && lobby.state !== 'finished') found = true;
-  });
-  return found;
-}
-
-// Удаление игрока из лобби
-function removePlayerFromLobby(ws, userId) {
-  ensureMap('lobbies');
-  let removed = false;
-  lobbies.forEach((lobby, id) => {
-    const idx = lobby.players.findIndex(p => p.ws === ws);
-    if (idx !== -1) {
-      lobby.players.splice(idx, 1);
-      if (lobby.players.length === 0) {
-        lobbies.delete(id);
-      } else {
-        if (lobby.host === userId) {
-          lobby.host = lobby.players[0].id;
-        }
-        lobby.players.forEach(p => p.ws.send(JSON.stringify({
-          type: 'lobby_update',
-          players: lobby.players.map(p => ({ id: p.id, username: p.username }))
-        })));
-      }
-      removed = true;
-    }
-  });
-  return removed;
-}
-
 // ==================== WebSocket ====================
+const clients = new Map();
+const activeLobbies = new Map();   // ← переименовано, единственное место
+
 wss.on('connection', (ws) => {
   ws.on('message', (raw) => {
     let msg;
@@ -255,63 +160,43 @@ wss.on('connection', (ws) => {
         try {
           const dec = jwt.verify(msg.token, JWT_SECRET);
           User.findById(dec.id).then(user => {
-            if (!user) {
-              ws.send(JSON.stringify({ type: 'error', text: 'User not found' }));
-              return;
-            }
-            clients.set(ws, {
-              user: { id: user._id.toString(), username: user.username, is_neon: user.is_neon },
-              lobbyId: null,
-              peerId: null
-            });
-            ws.send(JSON.stringify({
-              type: 'auth_ok',
-              user: { id: user._id.toString(), username: user.username, is_neon: user.is_neon }
-            }));
+            if (!user) { ws.send(JSON.stringify({ type: 'error', text: 'User not found' })); return; }
+            clients.set(ws, { user: { id: user._id.toString(), username: user.username, is_neon: user.is_neon }, lobbyId: null, peerId: null });
+            ws.send(JSON.stringify({ type: 'auth_ok', user: { id: user._id.toString(), username: user.username, is_neon: user.is_neon } }));
             sendLobbyList(ws);
           });
-        } catch {
-          ws.send(JSON.stringify({ type: 'error', text: 'Auth failed' }));
-        }
+        } catch { ws.send(JSON.stringify({ type: 'error', text: 'Auth failed' })); }
         break;
       }
-
       case 'create_lobby': {
         const client = clients.get(ws);
         if (!client) return;
-
-        if (hasActiveLobby(client.user.id)) {
-          ws.send(JSON.stringify({ type: 'error', text: 'У вас уже есть активное лобби' }));
-          return;
+        for (const [id, lobby] of activeLobbies) {
+          if (lobby.host === client.user.id && lobby.state !== 'finished') {
+            ws.send(JSON.stringify({ type: 'error', text: 'У вас уже есть активное лобби' }));
+            return;
+          }
         }
-
         const lobbyId = uuidv4().slice(0, 6);
         const lobby = {
           id: lobbyId,
           host: client.user.id,
           players: [{ id: client.user.id, username: client.user.username, ws }],
           state: 'waiting',
-          mapData: null,
-          round: 0
+          mapData: null
         };
-        lobbies.set(lobbyId, lobby);
+        activeLobbies.set(lobbyId, lobby);
         client.lobbyId = lobbyId;
         client.peerId = client.user.id;
-
         ws.send(JSON.stringify({ type: 'lobby_created', lobbyId }));
-        ws.send(JSON.stringify({
-          type: 'lobby_update',
-          players: lobby.players.map(p => ({ id: p.id, username: p.username }))
-        }));
+        ws.send(JSON.stringify({ type: 'lobby_update', players: lobby.players.map(p => ({ id: p.id, username: p.username })) }));
         broadcastLobbyList();
         break;
       }
-
       case 'join_lobby': {
         const client = clients.get(ws);
         if (!client) return;
-
-        const lobby = lobbies.get(msg.lobbyId);
+        const lobby = activeLobbies.get(msg.lobbyId);
         if (!lobby || lobby.state !== 'waiting') {
           ws.send(JSON.stringify({ type: 'error', text: 'Лобби недоступно' }));
           return;
@@ -320,15 +205,9 @@ wss.on('connection', (ws) => {
           ws.send(JSON.stringify({ type: 'error', text: 'Лобби заполнено' }));
           return;
         }
-        if (lobby.players.some(p => p.id === client.user.id)) {
-          ws.send(JSON.stringify({ type: 'error', text: 'Вы уже в этом лобби' }));
-          return;
-        }
-
         lobby.players.push({ id: client.user.id, username: client.user.username, ws });
         client.lobbyId = lobby.id;
         client.peerId = client.user.id;
-
         lobby.players.forEach(p => p.ws.send(JSON.stringify({
           type: 'lobby_update',
           players: lobby.players.map(p => ({ id: p.id, username: p.username }))
@@ -336,27 +215,21 @@ wss.on('connection', (ws) => {
         broadcastLobbyList();
         break;
       }
-
       case 'set_map': {
         const client = clients.get(ws);
         if (!client || !client.lobbyId) return;
-        const lobby = lobbies.get(client.lobbyId);
+        const lobby = activeLobbies.get(client.lobbyId);
         if (!lobby || lobby.host !== client.user.id) return;
         lobby.mapData = msg.mapData;
         break;
       }
-
       case 'start_game': {
         const client = clients.get(ws);
         if (!client || !client.lobbyId) return;
-        const lobby = lobbies.get(client.lobbyId);
-        if (!lobby || lobby.host !== client.user.id || lobby.players.length < 2) {
-          ws.send(JSON.stringify({ type: 'error', text: 'Недостаточно игроков или вы не хост' }));
-          return;
-        }
+        const lobby = activeLobbies.get(client.lobbyId);
+        if (!lobby || lobby.host !== client.user.id || lobby.players.length < 2) return;
         lobby.state = 'starting';
         lobby.players.forEach(p => p.ws.send(JSON.stringify({ type: 'game_starting', delay: 5 })));
-
         setTimeout(() => {
           if (lobby.state !== 'starting') return;
           lobby.state = 'playing';
@@ -373,33 +246,25 @@ wss.on('connection', (ws) => {
         }, 5000);
         break;
       }
-
       case 'signal': {
         const client = clients.get(ws);
         if (!client || !client.lobbyId) return;
-        const lobby = lobbies.get(client.lobbyId);
+        const lobby = activeLobbies.get(client.lobbyId);
         if (!lobby) return;
         const target = lobby.players.find(p => p.id === msg.target);
         if (target) {
-          target.ws.send(JSON.stringify({
-            type: 'signal',
-            from: client.user.id,
-            data: msg.data
-          }));
+          target.ws.send(JSON.stringify({ type: 'signal', from: client.user.id, data: msg.data }));
         }
         break;
       }
-
       case 'leave_lobby': {
         const client = clients.get(ws);
         if (!client || !client.lobbyId) return;
-        const lobby = lobbies.get(client.lobbyId);
+        const lobby = activeLobbies.get(client.lobbyId);
         if (!lobby) return;
-
         lobby.players = lobby.players.filter(p => p.ws !== ws);
-        if (lobby.players.length === 0) {
-          lobbies.delete(client.lobbyId);
-        } else {
+        if (lobby.players.length === 0) activeLobbies.delete(client.lobbyId);
+        else {
           if (lobby.host === client.user.id) lobby.host = lobby.players[0].id;
           lobby.players.forEach(p => p.ws.send(JSON.stringify({
             type: 'lobby_update',
@@ -410,13 +275,11 @@ wss.on('connection', (ws) => {
         broadcastLobbyList();
         break;
       }
-
       case 'game_over': {
         const client = clients.get(ws);
         if (!client || !client.lobbyId) return;
-        const lobby = lobbies.get(client.lobbyId);
+        const lobby = activeLobbies.get(client.lobbyId);
         if (!lobby) return;
-
         if (msg.winnerTeam) {
           lobby.players.forEach(p => {
             if (p.team === msg.winnerTeam) {
@@ -425,37 +288,63 @@ wss.on('connection', (ws) => {
           });
         }
         lobby.state = 'finished';
-        lobbies.delete(client.lobbyId);
-        broadcastLobbyList();
+        activeLobbies.delete(client.lobbyId);
         break;
       }
-
-      default:
-        break;
     }
   });
 
   ws.on('close', () => {
     const client = clients.get(ws);
     if (client && client.lobbyId) {
-      removePlayerFromLobby(ws, client.user.id);
-      client.lobbyId = null;
-      broadcastLobbyList();
+      const lobby = activeLobbies.get(client.lobbyId);
+      if (lobby) {
+        lobby.players = lobby.players.filter(p => p.ws !== ws);
+        if (lobby.players.length === 0) activeLobbies.delete(client.lobbyId);
+        else {
+          if (lobby.host === client.user.id) lobby.host = lobby.players[0].id;
+          lobby.players.forEach(p => p.ws.send(JSON.stringify({
+            type: 'lobby_update',
+            players: lobby.players.map(p => ({ id: p.id, username: p.username }))
+          })));
+        }
+      }
     }
     clients.delete(ws);
   });
 });
 
-// ==================== Запуск сервера ====================
+function broadcastLobbyList() {
+  // Надёжная проверка, что activeLobbies – итерируемый Map
+  if (!activeLobbies || typeof activeLobbies[Symbol.iterator] !== 'function') return;
+  const list = [];
+  for (const [id, lobby] of activeLobbies) {
+    if (lobby.state === 'waiting') {
+      list.push({ id, host: lobby.players[0]?.username, players: lobby.players.length });
+    }
+  }
+  for (const [ws, client] of clients) {
+    if (client.user && !client.lobbyId) {
+      ws.send(JSON.stringify({ type: 'lobby_list', lobbies: list }));
+    }
+  }
+}
+
+function sendLobbyList(ws) {
+  if (!activeLobbies || typeof activeLobbies[Symbol.iterator] !== 'function') return;
+  const list = [];
+  for (const [id, lobby] of activeLobbies) {
+    if (lobby.state === 'waiting') {
+      list.push({ id, host: lobby.players[0]?.username, players: lobby.players.length });
+    }
+  }
+  ws.send(JSON.stringify({ type: 'lobby_list', lobbies: list }));
+}
+
+// Запуск
 connectDB().then(() => {
   server.listen(process.env.PORT || 3000, () => {
-    console.log('✅ Project Neon server running');
-    setInterval(() => {
-      try {
-        broadcastLobbyList();
-      } catch (err) {
-        console.error('❌ Таймер упал:', err);
-      }
-    }, 3000);
+    console.log('Project Neon server running');
+    setInterval(broadcastLobbyList, 3000);
   });
 });
