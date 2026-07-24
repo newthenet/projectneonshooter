@@ -20,6 +20,10 @@
     button.red { background:var(--red); }
     .flex { display:flex; gap:8px; } .flex>* { flex:1; }
     #gameCanvas, #editorCanvas { position:absolute; top:0; left:0; width:100%; height:100%; }
+    #crosshair { position:absolute; top:50%; left:50%; width:20px; height:20px; transform:translate(-50%,-50%); pointer-events:none; }
+    #crosshair::before, #crosshair::after { content:''; position:absolute; background:rgba(0,255,0,0.8); }
+    #crosshair::before { width:2px; height:100%; left:50%; transform:translateX(-50%); }
+    #crosshair::after { height:2px; width:100%; top:50%; transform:translateY(-50%); }
     #hud { position:absolute; bottom:20px; left:50%; transform:translateX(-50%); display:flex; gap:20px; align-items:center; background:rgba(0,0,0,0.7); padding:8px 16px; border-radius:8px; z-index:5; }
     .health-bar { width:200px; height:10px; background:#333; border-radius:5px; overflow:hidden; }
     .health-fill { height:100%; width:100%; background:var(--green); transition:width 0.2s; }
@@ -75,6 +79,7 @@
     <!-- ИГРА -->
     <div id="gameScreen" class="screen">
       <div id="gameCanvas"></div>
+      <div id="crosshair" style="display:none;"></div>
       <div id="clickOverlay">Кликните, чтобы начать игру</div>
       <div id="hud" style="display:none;">
         <span id="ammoDisplay">10/10</span>
@@ -144,6 +149,7 @@
     const startBtn = document.getElementById('startBtn');
     const mapSelect = document.getElementById('mapSelect');
     const hud = document.getElementById('hud');
+    const crosshairEl = document.getElementById('crosshair');
     const ammoDisplay = document.getElementById('ammoDisplay');
     const healthFill = document.getElementById('healthFill');
     const healthValue = document.getElementById('healthValue');
@@ -158,9 +164,11 @@
       if (name === 'game' && game.renderer) {
         document.getElementById('gameCanvas').appendChild(game.renderer.domElement);
         hud.style.display = 'flex';
-        // Фокус для клавиатуры (чат и движение заработают после захвата мыши)
-        document.body.focus();
-      } else hud.style.display = 'none';
+        crosshairEl.style.display = 'block';
+      } else {
+        hud.style.display = 'none';
+        crosshairEl.style.display = 'none';
+      }
     }
 
     // ==================== СЕТЬ ====================
@@ -289,7 +297,6 @@
       showScreen('game');
       updateHUD();
 
-      // Показать оверлей, ждать клика для захвата мыши
       clickOverlay.style.display = 'flex';
       clickOverlay.onclick = () => {
         clickOverlay.style.display = 'none';
@@ -298,6 +305,10 @@
       };
 
       players.forEach(p => { if (p.id !== user.id) createPeer(p.id, true); });
+      // Запускаем первый раунд с задержкой, чтобы пиры успели подключиться
+      setTimeout(() => {
+        if (!game.gameOver) startRound();
+      }, 1500);
     }
 
     function initGameRenderer() {
@@ -366,6 +377,7 @@
         case 'shoot': createShootEffect(msg.origin, msg.dir); break;
         case 'hit': applyDamage(msg.target, msg.damage, msg.hitbox); break;
         case 'reload': /* индикация */ break;
+        case 'round_start': onRoundStart(msg.round, msg.freezeUntil); break;
         case 'round_end': endRound(msg.winnerTeam); break;
         case 'game_over': gameOver(msg.winnerTeam); break;
         case 'chat': addChatMessage(msg.from, msg.text); break;
@@ -378,19 +390,25 @@
     }, 50);
 
     function updateRemotePlayer(id, state) {
-      if (!game.players[id]) { game.players[id] = { id, team:state.team, health:state.health, mesh:null }; createPlayerMesh(id); }
+      if (!game.players[id]) { game.players[id] = { id, team:state.team, health:state.health, mesh:null }; createPlayerMesh(id, state.team); }
       const p = game.players[id];
       p.health = state.health;
       if (p.mesh) { p.mesh.position.fromArray(state.pos); p.mesh.rotation.set(state.rot[0], state.rot[1], state.rot[2]); }
     }
 
-    function createPlayerMesh(id) {
+    function createPlayerMesh(id, team) {
       const group = new THREE.Group();
-      const body = new THREE.Mesh(new THREE.BoxGeometry(1,2,1), new THREE.MeshLambertMaterial({color:0xff0000}));
-      body.position.y = 1; body.userData = { playerId:id, hitbox:'body' };
-      const head = new THREE.Mesh(new THREE.BoxGeometry(0.5,0.5,0.5), new THREE.MeshLambertMaterial({color:0xffff00}));
-      head.position.y = 2.25; head.userData = { playerId:id, hitbox:'head' };
-      group.add(body); group.add(head);
+      const bodyColor = team === 't' ? 0xff4444 : 0x4444ff;
+      const bodyGeo = new THREE.CylinderGeometry(0.4, 0.5, 1.8, 8);
+      const body = new THREE.Mesh(bodyGeo, new THREE.MeshLambertMaterial({color: bodyColor}));
+      body.position.y = 0.9;
+      body.userData = { playerId:id, hitbox:'body' };
+      const headGeo = new THREE.SphereGeometry(0.35, 16, 16);
+      const head = new THREE.Mesh(headGeo, new THREE.MeshLambertMaterial({color: 0xffccaa}));
+      head.position.y = 2.05;
+      head.userData = { playerId:id, hitbox:'head' };
+      group.add(body);
+      group.add(head);
       game.scene.add(group);
       game.players[id].mesh = group;
     }
@@ -402,9 +420,12 @@
       game.lastShot = now; game.ammo--;
       updateHUD();
       const dir = new THREE.Vector3(0,0,-1).applyQuaternion(game.camera.quaternion);
-      dir.x += (Math.random()-0.5)*0.03; dir.y += (Math.random()-0.5)*0.03; dir.z += (Math.random()-0.5)*0.03;
+      const spread = 0.02;
+      dir.x += (Math.random()-0.5)*spread;
+      dir.y += (Math.random()-0.5)*spread;
+      dir.z += (Math.random()-0.5)*spread;
       dir.normalize();
-      game.camera.rotation.x += 0.01;
+      game.camera.rotation.x += 0.005;
       const raycaster = new THREE.Raycaster(game.camera.position.clone(), dir);
       const intersects = raycaster.intersectObjects(game.scene.children, true);
       for (const inter of intersects) {
@@ -418,6 +439,7 @@
         }
       }
       broadcastP2P({ type:'shoot', origin: game.camera.position.toArray(), dir: dir.toArray() });
+      createShootEffect(game.camera.position.toArray(), dir.toArray());
       if (game.ammo === 0) reload();
     }
 
@@ -437,27 +459,49 @@
 
     function updateHUD() {
       ammoDisplay.textContent = `${game.ammo}/${game.maxAmmo}${game.reloading ? ' (перезарядка)' : ''}`;
-      healthFill.style.width = `${game.health}%`; healthValue.textContent = game.health;
+      healthFill.style.width = `${game.health}%`;
+      healthValue.textContent = game.health;
       roundInfo.textContent = `Раунд ${game.round}/${game.maxRounds} | ${game.myTeam?.toUpperCase()}`;
     }
 
     function startRound() {
-      game.roundActive = true; game.freezeUntil = Date.now() + 5000;
-      game.health = 100; game.ammo = game.maxAmmo; game.reloading = false;
+      game.roundActive = true;
+      game.freezeUntil = Date.now() + 5000;
+      game.health = 100;
+      game.ammo = game.maxAmmo;
+      game.reloading = false;
       broadcastP2P({ type:'round_start', round: game.round, freezeUntil: game.freezeUntil });
+    }
+
+    function onRoundStart(round, freezeUntil) {
+      game.roundActive = true;
+      game.freezeUntil = freezeUntil;
+      game.round = round;
+      game.health = 100;
+      game.ammo = game.maxAmmo;
+      game.reloading = false;
+      updateHUD();
     }
 
     function endRound(winnerTeam) {
       game.roundActive = false;
-      if (winnerTeam === game.myTeam) fetch('/api/win', { method:'POST', headers:{'Authorization':'Bearer '+token} });
+      if (winnerTeam === game.myTeam) {
+        fetch('/api/win', { method:'POST', headers:{'Authorization':'Bearer '+token} }).catch(()=>{});
+      }
       game.round++;
       if (game.round > game.maxRounds) { gameOver(winnerTeam); return; }
-      if (game.round === 4) { game.myTeam = game.myTeam === 't' ? 'ct' : 't'; Object.values(game.players).forEach(p => p.team = p.team === 't' ? 'ct' : 't'); }
+      if (game.round === 4) {
+        game.myTeam = game.myTeam === 't' ? 'ct' : 't';
+        Object.values(game.players).forEach(p => p.team = p.team === 't' ? 'ct' : 't');
+      }
       setTimeout(startRound, 2000);
     }
 
     function gameOver(winnerTeam) {
-      game.gameOver = true; broadcastP2P({ type:'game_over', winnerTeam }); alert(`Победила команда ${winnerTeam}`); leaveGame();
+      game.gameOver = true;
+      broadcastP2P({ type:'game_over', winnerTeam });
+      alert(`Игра окончена! Победила команда ${winnerTeam}`);
+      leaveGame();
     }
 
     function checkRoundEnd() {
@@ -479,16 +523,21 @@
       if (!game.scene) return;
       const origin = new THREE.Vector3().fromArray(originArr);
       const dir = new THREE.Vector3().fromArray(dirArr);
-      const tracer = new THREE.Mesh(new THREE.CylinderGeometry(0.02,0.02,2,4), new THREE.MeshBasicMaterial({color:0xffff00}));
-      tracer.position.copy(origin).add(dir.clone().multiplyScalar(1));
+      const tracer = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.02, 0.02, 1.5, 4),
+        new THREE.MeshBasicMaterial({color:0xffff00})
+      );
+      tracer.position.copy(origin).add(dir.clone().multiplyScalar(0.75));
       tracer.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), dir);
       game.scene.add(tracer);
       setTimeout(() => game.scene.remove(tracer), 100);
     }
 
     function addChatMessage(from, text) {
-      const div = document.createElement('div'); div.textContent = `${from}: ${text}`;
-      chatBox.appendChild(div); chatBox.scrollTop = chatBox.scrollHeight;
+      const div = document.createElement('div');
+      div.textContent = `${from}: ${text}`;
+      chatBox.appendChild(div);
+      chatBox.scrollTop = chatBox.scrollHeight;
     }
 
     // Игровой цикл
@@ -498,6 +547,7 @@
       if (game.roundActive && Date.now() > game.freezeUntil) handleMovement();
       game.renderer.render(game.scene, game.camera);
     }
+
     function handleMovement() {
       if (!game.mouseLocked) return;
       const speed = 5 * 0.1;
@@ -506,10 +556,13 @@
       if (game.keys['KeyS']) dir.z += 1;
       if (game.keys['KeyA']) dir.x -= 1;
       if (game.keys['KeyD']) dir.x += 1;
-      if (game.keys['Space'] || game.keys['KeyQ']) { if (game.camera.position.y <= 1) game.camera.position.y = 2; }
+      if ((game.keys['Space'] || game.keys['KeyQ']) && game.camera.position.y <= 1) {
+        game.camera.position.y = 2.5; // прыжок
+      }
       dir.normalize().multiplyScalar(speed);
       game.camera.position.add(dir);
-      if (game.camera.position.y > 1) game.camera.position.y -= 0.2; else game.camera.position.y = 1;
+      if (game.camera.position.y > 1) game.camera.position.y -= 0.2;
+      else game.camera.position.y = 1;
     }
 
     // Управление
@@ -521,6 +574,19 @@
         if (chatInput.style.display === 'block') chatInput.focus();
       }
       if (e.code === 'KeyL' && screens.game.classList.contains('active')) { if (confirm('Сдаться?')) leaveGame(); }
+      // Быстрый чат V+...
+      if (e.code === 'KeyV' && screens.game.classList.contains('active')) {
+        const quickHandler = (ev) => {
+          if (ev.code === 'KeyT') broadcastP2P({ type:'chat', text:'Hello', from: user.username });
+          else if (ev.code === 'KeyY') broadcastP2P({ type:'chat', text:'Run', from: user.username });
+          else if (ev.code === 'KeyU') broadcastP2P({ type:'chat', text:'Help me', from: user.username });
+          else if (ev.code === 'KeyF') broadcastP2P({ type:'chat', text:'Planting', from: user.username });
+          else if (ev.code === 'KeyG') broadcastP2P({ type:'chat', text:'Defusing', from: user.username });
+          else if (ev.code === 'KeyH') broadcastP2P({ type:'chat', text:'Sorry', from: user.username });
+          document.removeEventListener('keydown', quickHandler);
+        };
+        document.addEventListener('keydown', quickHandler);
+      }
     });
     document.addEventListener('keyup', e => game.keys[e.code] = false);
     document.addEventListener('mousemove', e => {
