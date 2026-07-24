@@ -114,13 +114,15 @@
     let user = null, ws = null, lobbyId = null, inLobby = false;
     let peer = null, dataChannel = null;
     let amHost = false;
-    let gameState = null; // объект состояния, получаемый от хоста
+    let gameState = null;
 
     const game = {
       scene:null, camera:null, renderer:null,
       keys:{}, mouseLocked:false,
       lastShot:0, shootCooldown:0.3,
-      myId:null, myTeam:null
+      myId:null, myTeam:null,
+      ammo:10, maxAmmo:10, reloading:false,
+      health:100
     };
 
     const editor = {
@@ -169,7 +171,7 @@
       }
     }
 
-    // ==================== СЕТЬ (WebSocket) ====================
+    // ==================== СЕТЬ ====================
     function connectWS() {
       if (ws) { ws.onclose = null; ws.close(); }
       ws = new WebSocket(WS_URL);
@@ -197,7 +199,7 @@
     }
     function sendWS(obj) { if (ws?.readyState===1) ws.send(JSON.stringify(obj)); }
 
-    // ==================== АВТОРИЗАЦИЯ И МЕНЮ (как раньше) ====================
+    // ==================== АВТОРИЗАЦИЯ И МЕНЮ ====================
     function login() {
       const u = document.getElementById('loginUsername').value.trim();
       const p = document.getElementById('loginPassword').value;
@@ -227,7 +229,7 @@
       editorBtn.style.display = user.is_neon?'block':'none';
     }
 
-    // ==================== ЛОББИ (без изменений) ====================
+    // ==================== ЛОББИ ====================
     function showLobbies() { showScreen('lobby'); inLobbyDiv.style.display='none'; inLobby=false; sendWS({ type:'lobby_list' }); }
     function createLobby() { sendWS({ type:'create_lobby' }); }
     function joinLobby(id) { sendWS({ type:'join_lobby', lobbyId:id }); inLobby=true; }
@@ -277,28 +279,24 @@
 
     // ==================== P2P ИГРА (ХОСТ-КЛИЕНТ) ====================
     function startP2PGame(players, mapData) {
-      // Определяем, кто хост (первый в списке — создатель лобби)
       amHost = (players[0].id === user.id);
       game.myId = user.id;
       game.myTeam = players.find(p => p.id === user.id).team;
+      game.health = 100; game.ammo = game.maxAmmo; game.reloading = false;
 
-      // Инициализируем рендерер, если ещё нет
       if (!game.renderer) initGameRenderer();
       loadMap(mapData || defaultMapData());
       showScreen('game');
 
-      // Уничтожаем предыдущий пир, если был
       if (peer) {
         try { peer.destroy(); } catch(e) {}
         peer = null;
         dataChannel = null;
       }
 
-      // Находим ID другого игрока
       const otherPlayer = players.find(p => p.id !== user.id);
-      if (!otherPlayer) return; // если один, то игра не начнётся
+      if (!otherPlayer) return;
 
-      // Создаём пир (хост — инициатор)
       createPeer(otherPlayer.id, amHost);
 
       clickOverlay.style.display = 'flex';
@@ -308,7 +306,6 @@
         document.body.focus();
       };
 
-      // Если мы хост, запускаем локальный игровой цикл (серверную логику)
       if (amHost) {
         initHostState(players, mapData);
       }
@@ -321,7 +318,6 @@
         maxRounds: 5,
         roundActive: false,
         freezeUntil: Date.now() + 5000,
-        winner: null
       };
       players.forEach(p => {
         gameState.players[p.id] = {
@@ -333,21 +329,29 @@
           rotation: {x:0,y:0,z:0}
         };
       });
-      // Отправляем начальное состояние клиенту, когда канал откроется
       if (dataChannel && dataChannel.connected) {
         sendToPeer({ type:'game_state', state: gameState });
       }
     }
 
+    const peerConfig = {
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:openrelay.metered.ca:80' },
+        { urls: 'turn:openrelay.metered.ca:80?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+        { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+      ]
+    };
+
     function createPeer(remoteId, initiator) {
-      peer = new SimplePeer({ initiator, config:{ iceServers:[{ urls:'stun:stun.l.google.com:19302' }] } });
+      if (peer && !peer.destroyed) return;
+      peer = new SimplePeer({ initiator, config: peerConfig });
       peer.on('signal', data => {
         if (!peer.destroyed) sendWS({ type:'signal', target: remoteId, data });
       });
       peer.on('connect', () => {
         console.log('P2P connected');
         dataChannel = peer;
-        // Если мы хост, отправляем начальное состояние
         if (amHost && gameState) {
           sendToPeer({ type:'game_state', state: gameState });
         }
@@ -379,28 +383,22 @@
       }
     }
 
-    // ==================== ОБРАБОТЧИКИ СООБЩЕНИЙ ====================
-    // Хост получает ввод от клиента
     function handleHostMessage(msg) {
       if (msg.type === 'input') {
-        // Обновляем состояние клиента
         if (gameState && gameState.players[msg.id]) {
           const p = gameState.players[msg.id];
           p.position = msg.pos;
           p.rotation = msg.rot;
-          // Обрабатываем выстрел
-          if (msg.shoot && gameState.roundActive) {
+          if (msg.shoot && gameState.roundActive && gameState.freezeUntil < Date.now()) {
             hostProcessShoot(msg.id, msg.shootOrigin, msg.shootDir);
           }
         }
       } else if (msg.type === 'chat') {
         addChatMessage(msg.from, msg.text);
-        // Рассылаем чат обратно всем (включая себя)
         sendToPeer({ type:'chat', from: msg.from, text: msg.text });
       }
     }
 
-    // Клиент получает состояние от хоста
     function handleClientMessage(msg) {
       if (msg.type === 'game_state') {
         gameState = msg.state;
@@ -412,17 +410,14 @@
 
     function updateLocalPlayerFromState() {
       if (!gameState || !gameState.players[game.myId]) return;
-      const myData = gameState.players[game.myId];
-      // Обновляем здоровье, патроны и т.д.
-      game.health = myData.health;
-      game.ammo = myData.ammo;
-      // Перемещаем камеру, если позиция изменилась
-      game.camera.position.set(myData.position.x, myData.position.y, myData.position.z);
-      game.camera.rotation.set(myData.rotation.x, myData.rotation.y, myData.rotation.z);
+      const my = gameState.players[game.myId];
+      game.health = my.health;
+      game.ammo = my.ammo !== undefined ? my.ammo : game.ammo;
+      game.camera.position.set(my.position.x, my.position.y, my.position.z);
+      game.camera.rotation.set(my.rotation.x, my.rotation.y, my.rotation.z);
       updateHUD();
     }
 
-    // ==================== ХОСТ: ОБРАБОТКА ВЫСТРЕЛА ====================
     function hostProcessShoot(shooterId, originArr, dirArr) {
       const origin = new THREE.Vector3().fromArray(originArr);
       const dir = new THREE.Vector3().fromArray(dirArr);
@@ -439,7 +434,6 @@
             gameState.players[obj.userData.playerId].health = 0;
             checkRoundEndHost();
           }
-          // Отправляем обновлённое состояние клиенту
           sendToPeer({ type:'game_state', state: gameState });
           break;
         }
@@ -463,10 +457,8 @@
         return;
       }
       if (gameState.round === 4) {
-        // Смена сторон
         Object.values(gameState.players).forEach(p => p.team = p.team==='t'?'ct':'t');
       }
-      // Сброс здоровья и позиций
       Object.values(gameState.players).forEach(p => {
         p.health = 100;
         p.position = {x:0, y:1, z: p.team==='t'?5:-5};
@@ -482,15 +474,12 @@
       leaveGame();
     }
 
-    // ==================== ИГРОВОЙ ЦИКЛ (ХОСТ) ====================
     let lastHostUpdate = 0;
     function hostGameLoop() {
       if (!amHost || !gameState || !gameState.roundActive) return;
       const now = performance.now();
       if (now - lastHostUpdate > 50) {
-        // Собираем состояние всех игроков (своё движение)
         if (game.mouseLocked && Date.now() > gameState.freezeUntil) {
-          // Двигаем себя
           handleMovement();
           gameState.players[game.myId].position = {
             x: game.camera.position.x,
@@ -503,14 +492,12 @@
             z: game.camera.rotation.z
           };
         }
-        // Отправляем состояние клиенту
         sendToPeer({ type:'game_state', state: gameState });
         lastHostUpdate = now;
       }
       updateHUD();
     }
 
-    // ==================== ОТПРАВКА ВВОДА (КЛИЕНТ) ====================
     let lastInputSend = 0;
     function sendInputToHost() {
       if (amHost) return;
@@ -528,7 +515,6 @@
       }
     }
 
-    // ==================== УПРАВЛЕНИЕ И СТРЕЛЬБА ====================
     function shoot() {
       if (!gameState || !gameState.roundActive || gameState.freezeUntil > Date.now()) return;
       if (game.ammo <= 0 || game.reloading) return;
@@ -538,8 +524,7 @@
       game.ammo--;
       updateHUD();
       const dir = new THREE.Vector3(0,0,-1).applyQuaternion(game.camera.quaternion);
-      const spread = 0.02;
-      dir.x += (Math.random()-0.5)*spread; dir.y += (Math.random()-0.5)*spread; dir.z += (Math.random()-0.5)*spread;
+      dir.x += (Math.random()-0.5)*0.02; dir.y += (Math.random()-0.5)*0.02; dir.z += (Math.random()-0.5)*0.02;
       dir.normalize();
       if (amHost) {
         hostProcessShoot(game.myId, game.camera.position.toArray(), dir.toArray());
@@ -572,7 +557,6 @@
       roundInfo.textContent = `Раунд ${gameState.round}/${gameState.maxRounds} | ${game.myTeam?.toUpperCase()}`;
     }
 
-    // ==================== ТРИЖДЫ РЕНДЕР ====================
     function initGameRenderer() {
       game.scene = new THREE.Scene(); game.scene.background = new THREE.Color(0x87ceeb);
       game.camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
@@ -587,7 +571,6 @@
         game.camera.updateProjectionMatrix();
         game.renderer.setSize(window.innerWidth, window.innerHeight);
       });
-      // Модельки игроков будут создаваться динамически в зависимости от состояния
     }
 
     function defaultMapData() {
@@ -609,17 +592,14 @@
       ground.rotation.x = -Math.PI/2; game.scene.add(ground);
     }
 
-    // Обновление визуальных моделей по состоянию
     function updateRemoteModels() {
       if (!gameState) return;
-      // Удаляем старые меши
       Object.keys(game.players).forEach(id => {
         if (game.players[id] && game.players[id].mesh) {
           game.scene.remove(game.players[id].mesh);
           delete game.players[id].mesh;
         }
       });
-      // Создаём меши для всех игроков, кроме себя (себя не видим)
       Object.values(gameState.players).forEach(p => {
         if (p.id === game.myId) return;
         const group = new THREE.Group();
@@ -639,7 +619,6 @@
       });
     }
 
-    // Игровой цикл (общий для всех)
     function gameLoop() {
       requestAnimationFrame(gameLoop);
       if (!game.renderer || !game.scene) return;
@@ -668,7 +647,6 @@
       else game.camera.position.y = 1;
     }
 
-    // Управление
     document.addEventListener('keydown', e => {
       game.keys[e.code] = true;
       if (e.code === 'KeyR') reload();
@@ -696,7 +674,7 @@
           sendToPeer(msg);
         } else {
           sendToPeer(msg);
-          addChatMessage(msg.from, msg.text); // локально тоже покажем
+          addChatMessage(msg.from, msg.text);
         }
         chatInput.value = ''; chatInput.style.display = 'none';
       }
