@@ -2,295 +2,614 @@
 <html lang="ru">
 <head>
   <meta charset="UTF-8">
-  <title>Project Neon – Lobby</title>
+  <title>Project Neon</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/simple-peer@9.11.1/simplepeer.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
   <style>
-    body { background:#0d1117; color:#c9d1d9; font-family:sans-serif; display:flex; justify-content:center; align-items:center; height:100vh; margin:0; }
-    .panel { background:#161b22; padding:24px; border-radius:12px; min-width:320px; text-align:center; }
-    button { width:100%; margin:6px 0; padding:10px; border-radius:8px; border:1px solid #30363d; background:#21262d; color:#c9d1d9; cursor:pointer; }
-    button:hover { background:#30363d; }
-    input { width:100%; padding:10px; margin:6px 0; border-radius:8px; border:1px solid #30363d; background:#0d1117; color:#c9d1d9; }
-    .hidden { display:none; }
-    ul { list-style:none; padding:0; }
-    li { padding:5px; background:#21262d; margin:4px 0; border-radius:4px; }
-    #lobbyId { font-weight:bold; color:#58a6ff; }
+    :root { --bg:#0d1117; --panel:#161b22; --text:#c9d1d9; --accent:#58a6ff; --red:#da3633; --green:#3fb950; }
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { background:var(--bg); color:var(--text); font-family:'Segoe UI',sans-serif; overflow:hidden; }
+    #app { position:absolute; top:0; left:0; width:100%; height:100%; }
+    .screen { display:none; position:absolute; top:0; left:0; width:100%; height:100%; }
+    .screen.active { display:flex; justify-content:center; align-items:center; }
+    .panel { background:var(--panel); border-radius:12px; padding:24px; min-width:340px; max-height:85vh; overflow-y:auto; text-align:center; }
+    h2,h3 { margin-bottom:12px; color:var(--accent); }
+    button, input, select { width:100%; margin:6px 0; padding:10px; border-radius:8px; border:1px solid #30363d; background:#21262d; color:var(--text); font-size:14px; }
+    button { cursor:pointer; background:var(--accent); color:#fff; font-weight:bold; }
+    button.red { background:var(--red); }
+    .flex { display:flex; gap:8px; } .flex>* { flex:1; }
+    #gameCanvas, #editorCanvas { position:absolute; top:0; left:0; width:100%; height:100%; }
+    #hud { position:absolute; bottom:20px; left:50%; transform:translateX(-50%); display:flex; gap:20px; align-items:center; background:rgba(0,0,0,0.7); padding:8px 16px; border-radius:8px; }
+    .health-bar { width:200px; height:10px; background:#333; border-radius:5px; overflow:hidden; }
+    .health-fill { height:100%; width:100%; background:var(--green); transition:width 0.2s; }
+    #leaderboardList div { padding:4px; border-bottom:1px solid #30363d; }
+    #chatBox { position:fixed; bottom:80px; left:10px; width:300px; max-height:120px; overflow-y:auto; color:#fff; font-size:14px; background:rgba(0,0,0,0.6); padding:5px; border-radius:4px; }
+    #chatInput { position:fixed; bottom:50px; left:10px; width:300px; display:none; padding:8px; background:#222; color:#fff; border:1px solid #444; border-radius:4px; }
+    .editor-panel { position:absolute; top:10px; left:10px; background:var(--panel); padding:10px; border-radius:8px; display:flex; flex-direction:column; gap:4px; z-index:10; }
+    #editorMsg { position:absolute; bottom:20px; left:50%; transform:translateX(-50%); background:rgba(0,0,0,0.7); color:#fff; padding:8px 16px; border-radius:6px; z-index:10; display:none; }
   </style>
 </head>
 <body>
   <div id="app">
-    <!-- Меню -->
-    <div id="menuScreen" class="panel">
-      <h2>Project Neon</h2>
-      <div id="authForms">
-        <input id="loginUser" placeholder="Логин">
-        <input id="loginPass" type="password" placeholder="Пароль">
-        <button onclick="login()">Войти</button>
-        <button onclick="register()">Регистрация</button>
-      </div>
-      <div id="userInfo" class="hidden">
-        <p id="displayName"></p>
-        <button onclick="showLobbies()">Играть</button>
-        <button onclick="logout()">Выйти</button>
+    <!-- МЕНЮ -->
+    <div id="menuScreen" class="screen active">
+      <div class="panel">
+        <h2>Project Neon</h2>
+        <div id="authBlock">
+          <input id="loginUsername" placeholder="Логин"><br>
+          <input id="loginPassword" type="password" placeholder="Пароль"><br>
+          <button onclick="login()">Войти</button>
+          <button onclick="register()">Регистрация</button>
+        </div>
+        <div id="userBlock" style="display:none;">
+          <p id="displayName" style="font-size:18px;"></p>
+          <button onclick="showLobbies()">Играть</button>
+          <button id="editorBtn" style="display:none;" onclick="openEditor()">Редактор карт</button>
+          <button onclick="showLeaderboard()">Лидерборд</button>
+          <button onclick="logout()" class="red">Выйти</button>
+        </div>
+        <div id="leaderboardPanel" style="display:none;">
+          <h3>Топ-50</h3>
+          <div id="leaderboardList"></div>
+          <button onclick="showMenu()">Назад</button>
+        </div>
       </div>
     </div>
-
-    <!-- Лобби -->
-    <div id="lobbyScreen" class="panel hidden">
-      <h3>Список лобби</h3>
-      <div id="lobbyList">Загрузка...</div>
-      <button onclick="createLobby()">Создать лобби</button>
-      <div id="myLobby" class="hidden">
-        <h4>Лобби <span id="lobbyId"></span></h4>
-        <ul id="playerList"></ul>
-        <button id="startBtn" onclick="startGame()">Начать игру</button>
+    <!-- ЛОББИ -->
+    <div id="lobbyScreen" class="screen">
+      <div class="panel">
+        <h3>Лобби</h3>
+        <div id="lobbyList">Загрузка...</div>
+        <button onclick="createLobby()">Создать лобби</button>
+        <div id="inLobby" style="display:none;">
+          <h4>Лобби <span id="lobbyIdDisplay"></span></h4>
+          <ul id="playerList" style="list-style:none;padding:0;"></ul>
+          <div style="margin:8px 0;"><select id="mapSelect"><option value="">Стандартная</option></select></div>
+          <button id="startBtn" onclick="startGame()">Начать игру</button>
+        </div>
+        <button onclick="leaveLobby()" class="red">Выход</button>
       </div>
-      <button onclick="leaveLobby()">Назад в меню</button>
+    </div>
+    <!-- ИГРА -->
+    <div id="gameScreen" class="screen">
+      <div id="gameCanvas"></div>
+      <div id="hud" style="display:none;">
+        <span id="ammoDisplay">10/10</span>
+        <div class="health-bar"><div id="healthFill" class="health-fill"></div></div>
+        <span id="healthValue">100</span>
+        <span id="roundInfo"></span>
+      </div>
+      <div id="chatBox"></div>
+      <input id="chatInput" placeholder="Чат (. для открытия)">
+    </div>
+    <!-- РЕДАКТОР КАРТ -->
+    <div id="editorScreen" class="screen">
+      <div id="editorCanvas"></div>
+      <div class="editor-panel">
+        <button onclick="editorAddBox()">Ящик</button>
+        <button onclick="editorAddWall()">Стена</button>
+        <button onclick="editorAddSpawn('t')">Спавн Т</button>
+        <button onclick="editorAddSpawn('ct')">Спавн CT</button>
+        <button onclick="editorAddBombSite()">Плент</button>
+        <button onclick="editorSaveMap()">Сохранить</button>
+        <button onclick="editorLoadMap()">Загрузить</button>
+        <button onclick="closeEditor()" class="red">Выход</button>
+      </div>
+      <div id="editorMsg">Объект выбран. Стрелки для перемещения.</div>
     </div>
   </div>
 
   <script>
+    // ==================== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ====================
     const SERVER = location.origin.replace(/^http/, 'ws');
     let token = localStorage.getItem('token');
     let user = null;
     let ws = null;
-    let currentLobbyId = null;
+    let lobbyId = null;
     let inLobby = false;
-    let reconnectTimeout = null;   // таймер переподключения
+    let peers = {}, dataChannels = {};
+    let game = {
+      scene:null, camera:null, renderer:null,
+      players:{}, myId:null, myTeam:null,
+      health:100, ammo:10, maxAmmo:10, reloading:false,
+      round:1, maxRounds:5, freezeUntil:0,
+      roundActive:false, gameOver:false,
+      keys:{}, mouseLocked:false,
+      lastShot:0, shootCooldown:0.3
+    };
+    let editor = {
+      scene:null, camera:null, renderer:null, controls:null,
+      objects:[], spawns:[], bombSite:null,
+      selectedObject:null
+    };
 
     // UI
-    const menuScreen = document.getElementById('menuScreen');
-    const lobbyScreen = document.getElementById('lobbyScreen');
-    const authForms = document.getElementById('authForms');
-    const userInfo = document.getElementById('userInfo');
+    const screens = {
+      menu: document.getElementById('menuScreen'),
+      lobby: document.getElementById('lobbyScreen'),
+      game: document.getElementById('gameScreen'),
+      editor: document.getElementById('editorScreen')
+    };
+    const authBlock = document.getElementById('authBlock');
+    const userBlock = document.getElementById('userBlock');
     const displayName = document.getElementById('displayName');
-    const lobbyList = document.getElementById('lobbyList');
-    const myLobby = document.getElementById('myLobby');
-    const lobbyIdSpan = document.getElementById('lobbyId');
+    const editorBtn = document.getElementById('editorBtn');
+    const lobbyListDiv = document.getElementById('lobbyList');
+    const inLobbyDiv = document.getElementById('inLobby');
+    const lobbyIdDisplay = document.getElementById('lobbyIdDisplay');
     const playerList = document.getElementById('playerList');
     const startBtn = document.getElementById('startBtn');
+    const mapSelect = document.getElementById('mapSelect');
+    const hud = document.getElementById('hud');
+    const ammoDisplay = document.getElementById('ammoDisplay');
+    const healthFill = document.getElementById('healthFill');
+    const healthValue = document.getElementById('healthValue');
+    const roundInfo = document.getElementById('roundInfo');
+    const chatBox = document.getElementById('chatBox');
+    const chatInput = document.getElementById('chatInput');
 
-    function showScreen(screen) {
-      menuScreen.classList.add('hidden');
-      lobbyScreen.classList.add('hidden');
-      screen.classList.remove('hidden');
+    function showScreen(name) {
+      Object.values(screens).forEach(s => s.classList.remove('active'));
+      screens[name].classList.add('active');
+      if (name === 'game' && game.renderer) {
+        document.getElementById('gameCanvas').appendChild(game.renderer.domElement);
+        hud.style.display = 'flex';
+      } else hud.style.display = 'none';
     }
 
-    // ==================== WebSocket ====================
+    // ==================== СЕТЬ ====================
     function connectWS() {
-      // Очищаем старый таймер и сокет
-      if (reconnectTimeout) { clearTimeout(reconnectTimeout); reconnectTimeout = null; }
-      if (ws) {
-        ws.onclose = null;
-        ws.onerror = null;
-        ws.onmessage = null;
-        ws.close();
-        ws = null;
-      }
-
+      if (ws) { ws.onclose = null; ws.close(); }
       ws = new WebSocket(SERVER);
-      ws.onopen = () => {
-        console.log('WebSocket открыт');
-        if (token) {
-          console.log('Отправляю auth с токеном');
-          ws.send(JSON.stringify({ type:'auth', token }));
-        }
-      };
+      ws.onopen = () => { if (token) ws.send(JSON.stringify({ type:'auth', token })); };
       ws.onmessage = (e) => {
         let msg;
-        try { msg = JSON.parse(e.data); } catch(ex) { console.error('Ошибка парсинга:', ex); return; }
-        console.log('Получено:', msg.type, msg);
-        handleMessage(msg);
+        try { msg = JSON.parse(e.data); } catch(ex) { return; }
+        switch(msg.type) {
+          case 'auth_ok': user = msg.user; showMenu(); break;
+          case 'lobby_list': if (!inLobby) renderLobbyList(msg.lobbies); break;
+          case 'lobby_created':
+            lobbyId = msg.lobbyId; inLobby = true;
+            lobbyIdDisplay.textContent = lobbyId;
+            break;
+          case 'lobby_update':
+            updateLobbyPlayers(msg.players);
+            inLobbyDiv.style.display = 'block';
+            startBtn.style.display = (msg.players[0]?.id === user.id) ? 'block' : 'none';
+            if (user.is_neon && msg.players[0]?.id === user.id) loadMapListToSelect();
+            break;
+          case 'game_starting': alert(`Игра начнётся через ${msg.delay} сек`); break;
+          case 'game_started': startP2PGame(msg.players, msg.mapData); break;
+          case 'signal': handleSignal(msg.from, msg.data); break;
+          case 'error': alert(msg.text); break;
+        }
       };
-      ws.onclose = () => {
-        console.log('WebSocket закрыт');
-        // Если вышли из аккаунта (token == null), не переподключаемся
-        if (!token) return;
-        console.log('Переподключение через 3 сек');
-        reconnectTimeout = setTimeout(connectWS, 3000);
-      };
-      ws.onerror = (err) => console.error('WebSocket ошибка:', err);
+      ws.onclose = () => setTimeout(connectWS, 3000);
     }
 
-    function handleMessage(msg) {
-      switch(msg.type) {
-        case 'auth_ok':
-          user = msg.user;
-          console.log('Авторизован:', user);
-          showMainMenu();
-          break;
-        case 'lobby_list':
-          console.log('Список лобби:', msg.lobbies);
-          if (!inLobby) renderLobbyList(msg.lobbies);
-          break;
-        case 'lobby_created':
-          currentLobbyId = msg.lobbyId;
-          inLobby = true;
-          console.log('Лобби создано, ID:', currentLobbyId);
-          myLobby.classList.remove('hidden');
-          lobbyIdSpan.textContent = currentLobbyId;
-          break;
-        case 'lobby_update':
-          console.log('Игроки лобби:', msg.players);
-          renderPlayers(msg.players);
-          myLobby.classList.remove('hidden');
-          if (msg.players.length > 0 && msg.players[0].id === user.id) {
-            startBtn.style.display = 'block';
-          } else {
-            startBtn.style.display = 'none';
-          }
-          break;
-        case 'game_starting':
-          alert(`Игра начнётся через ${msg.delay} сек`);
-          break;
-        case 'game_started':
-          alert('Игра началась!');
-          break;
-        case 'error':
-          alert(msg.text);
-          break;
-      }
-    }
+    function sendWS(obj) { if (ws?.readyState === 1) ws.send(JSON.stringify(obj)); }
 
-    function send(obj) {
-      if (ws?.readyState === WebSocket.OPEN) {
-        console.log('Отправка:', obj);
-        ws.send(JSON.stringify(obj));
-      } else {
-        console.error('WebSocket не открыт');
-      }
-    }
-
-    // ==================== UI логика ====================
+    // ==================== АВТОРИЗАЦИЯ ====================
     function login() {
-      const u = document.getElementById('loginUser').value.trim();
-      const p = document.getElementById('loginPass').value;
-      console.log('Логин:', u);
-      fetch('/api/login', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({username:u, password:p})
-      }).then(r=>r.json()).then(d => {
-        console.log('Ответ сервера:', d);
-        if(d.token) {
-          token = d.token;
-          localStorage.setItem('token', token);
-          user = d.user;
-          connectWS();   // подключаемся с новым токеном
-        } else {
-          alert(d.error || 'Ошибка входа');
-        }
-      });
+      const u = document.getElementById('loginUsername').value.trim();
+      const p = document.getElementById('loginPassword').value;
+      fetch('/api/login', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({username:u,password:p}) })
+        .then(r=>r.json()).then(d => {
+          if(d.token) { token=d.token; localStorage.setItem('token',token); user=d.user; connectWS(); }
+          else alert(d.error);
+        });
     }
-
     function register() {
-      const u = document.getElementById('loginUser').value.trim();
-      const p = document.getElementById('loginPass').value;
-      console.log('Регистрация:', u);
-      fetch('/api/register', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({username:u, password:p})
-      }).then(r=>r.json()).then(d => {
-        console.log('Ответ:', d);
-        if(d.token) {
-          token = d.token;
-          localStorage.setItem('token', token);
-          user = d.user;
-          connectWS();
-        } else {
-          alert(d.error || 'Ошибка регистрации');
-        }
-      });
+      const u = document.getElementById('loginUsername').value.trim();
+      const p = document.getElementById('loginPassword').value;
+      fetch('/api/register', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({username:u,password:p}) })
+        .then(r=>r.json()).then(d => {
+          if(d.token) { token=d.token; localStorage.setItem('token',token); user=d.user; connectWS(); }
+          else alert(d.error);
+        });
     }
-
-    function showMainMenu() {
-      authForms.classList.add('hidden');
-      userInfo.classList.remove('hidden');
-      displayName.textContent = user.username + (user.is_neon ? ' ✔' : '');
-      showScreen(menuScreen);
-    }
-
-    function showLobbies() {
-      showScreen(lobbyScreen);
-      myLobby.classList.add('hidden');
-      inLobby = false;
-      currentLobbyId = null;
-      lobbyList.innerHTML = 'Загрузка...';
-      send({ type:'lobby_list' });
-    }
-
-    function createLobby() {
-      console.log('Запрос создания лобби');
-      send({ type:'create_lobby' });
-    }
-
-    function leaveLobby() {
-      if (inLobby) {
-        send({ type:'leave_lobby' });
-        inLobby = false;
-        currentLobbyId = null;
-      }
-      showMainMenu();
-    }
-
     function logout() {
-      console.log('Выход из аккаунта');
-      token = null;
-      localStorage.removeItem('token');
-      user = null;
-
-      // Останавливаем таймер переподключения
-      if (reconnectTimeout) { clearTimeout(reconnectTimeout); reconnectTimeout = null; }
-
-      // Закрываем WebSocket
-      if (ws) {
-        ws.onclose = null;   // убираем автопереподключение
-        ws.close();
-        ws = null;
-      }
-
-      authForms.classList.remove('hidden');
-      userInfo.classList.add('hidden');
-      showScreen(menuScreen);
+      token=null; localStorage.removeItem('token'); user=null;
+      if (ws) { ws.onclose = null; ws.close(); }
+      showScreen('menu'); authBlock.style.display='block'; userBlock.style.display='none';
+    }
+    function showMenu() {
+      showScreen('menu'); authBlock.style.display='none'; userBlock.style.display='block';
+      displayName.textContent = user.username + (user.is_neon ? ' ✔' : '');
+      editorBtn.style.display = user.is_neon ? 'block' : 'none';
     }
 
-    function renderLobbyList(lobbies) {
-      lobbyList.innerHTML = '';
-      if (!lobbies || lobbies.length === 0) {
-        lobbyList.innerHTML = '<p>Нет активных лобби</p>';
-        return;
+    // ==================== ЛОББИ ====================
+    function showLobbies() { showScreen('lobby'); inLobbyDiv.style.display='none'; inLobby=false; sendWS({ type:'lobby_list' }); }
+    function createLobby() { sendWS({ type:'create_lobby' }); }
+    function joinLobby(id) { sendWS({ type:'join_lobby', lobbyId: id }); inLobby = true; }
+    function updateLobbyPlayers(players) {
+      playerList.innerHTML = '';
+      players.forEach(p => { const li = document.createElement('li'); li.textContent = p.username; playerList.appendChild(li); });
+    }
+    async function loadMapListToSelect() {
+      try {
+        const resp = await fetch('/api/maps', { headers: { 'Authorization': 'Bearer '+token } });
+        const maps = await resp.json();
+        mapSelect.innerHTML = '<option value="">Стандартная</option>';
+        maps.forEach(m => { const o = document.createElement('option'); o.value = m._id; o.textContent = m.name; mapSelect.appendChild(o); });
+      } catch(e) {}
+    }
+    async function startGame() {
+      const mapId = mapSelect.value;
+      if (mapId) {
+        const resp = await fetch('/api/maps/'+mapId, { headers: { 'Authorization': 'Bearer '+token } });
+        const map = await resp.json();
+        sendWS({ type:'set_map', mapData: map.data });
       }
+      sendWS({ type:'start_game' });
+    }
+    function leaveLobby() { if (inLobby) { sendWS({ type:'leave_lobby' }); inLobby = false; } showMenu(); }
+    function renderLobbyList(lobbies) {
+      lobbyListDiv.innerHTML = '';
+      if (!lobbies || lobbies.length === 0) { lobbyListDiv.innerHTML = '<p>Нет лобби</p>'; return; }
       lobbies.forEach(l => {
         const btn = document.createElement('button');
-        btn.textContent = `${l.host} (${l.players}/10)`;
-        btn.onclick = () => {
-          console.log('Присоединение к лобби', l.id);
-          send({ type:'join_lobby', lobbyId: l.id });
-          inLobby = true;
-          currentLobbyId = l.id;
-        };
-        lobbyList.appendChild(btn);
+        btn.textContent = `${l.host} (${l.players}/2)`;
+        btn.onclick = () => joinLobby(l.id);
+        lobbyListDiv.appendChild(btn);
       });
     }
 
-    function renderPlayers(players) {
-      playerList.innerHTML = '';
-      players.forEach(p => {
-        const li = document.createElement('li');
-        li.textContent = p.username;
-        playerList.appendChild(li);
+    // ==================== ЛИДЕРБОРД ====================
+    function showLeaderboard() {
+      fetch('/api/leaderboard').then(r=>r.json()).then(data => {
+        const list = document.getElementById('leaderboardList');
+        list.innerHTML = '';
+        data.forEach(p => { const div = document.createElement('div'); div.textContent = `${p.username}: ${p.wins} побед`; list.appendChild(div); });
+        document.getElementById('leaderboardPanel').style.display = 'block';
+        showScreen('menu');
       });
     }
 
-    function startGame() {
-      send({ type:'start_game' });
+    // ==================== P2P ИГРА ====================
+    function startP2PGame(players, mapData) {
+      Object.keys(peers).forEach(id => { if (peers[id]) peers[id].destroy(); });
+      peers = {}; dataChannels = {};
+      game.players = {};
+      players.forEach(p => { game.players[p.id] = { id:p.id, username:p.username, team:p.team, health:100, mesh:null }; });
+      game.myId = user.id;
+      game.myTeam = players.find(p => p.id === user.id).team;
+      game.health = 100; game.ammo = game.maxAmmo; game.reloading = false;
+      game.round = 1; game.roundActive = false; game.gameOver = false;
+      game.freezeUntil = Date.now() + 5000;
+      if (!game.renderer) initGameRenderer();
+      loadMap(mapData || defaultMapData());
+      showScreen('game');
+      updateHUD();
+      players.forEach(p => { if (p.id !== user.id) createPeer(p.id, true); });
+      document.body.requestPointerLock();
     }
+
+    function initGameRenderer() {
+      game.scene = new THREE.Scene(); game.scene.background = new THREE.Color(0x87ceeb);
+      game.camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
+      game.renderer = new THREE.WebGLRenderer({ antialias:true });
+      game.renderer.setSize(window.innerWidth, window.innerHeight);
+      document.getElementById('gameCanvas').appendChild(game.renderer.domElement);
+      game.scene.add(new THREE.AmbientLight(0x404040));
+      const light = new THREE.DirectionalLight(0xffffff,0.8); light.position.set(10,20,5); game.scene.add(light);
+      window.addEventListener('resize', () => {
+        if (!game.camera) return;
+        game.camera.aspect = window.innerWidth/window.innerHeight;
+        game.camera.updateProjectionMatrix();
+        game.renderer.setSize(window.innerWidth, window.innerHeight);
+      });
+    }
+
+    function defaultMapData() {
+      return {
+        spawns: [{team:'t',x:0,y:1,z:5},{team:'ct',x:0,y:1,z:-5}],
+        objects: [{type:'box',x:3,y:1,z:3,w:2,h:2,d:2},{type:'wall',x:-5,y:2,z:0,w:1,h:4,d:10}]
+      };
+    }
+
+    function loadMap(data) {
+      while(game.scene.children.length > 2) game.scene.remove(game.scene.children[2]);
+      data.objects?.forEach(obj => {
+        let mesh;
+        if (obj.type === 'box') mesh = new THREE.Mesh(new THREE.BoxGeometry(obj.w,obj.h,obj.d), new THREE.MeshLambertMaterial({color:0x8B7355}));
+        else if (obj.type === 'wall') mesh = new THREE.Mesh(new THREE.BoxGeometry(obj.w,obj.h,obj.d), new THREE.MeshLambertMaterial({color:0x888888}));
+        if (mesh) { mesh.position.set(obj.x, obj.y, obj.z); game.scene.add(mesh); }
+      });
+      const ground = new THREE.Mesh(new THREE.PlaneGeometry(50,50), new THREE.MeshLambertMaterial({color:0x228b22}));
+      ground.rotation.x = -Math.PI/2; game.scene.add(ground);
+      const spawn = data.spawns?.find(s => s.team === game.myTeam) || data.spawns?.[0];
+      if (spawn) game.camera.position.set(spawn.x, spawn.y, spawn.z);
+    }
+
+    // P2P
+    function createPeer(peerId, initiator) {
+      const peer = new SimplePeer({ initiator, config: { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] } });
+      peer.on('signal', data => sendWS({ type:'signal', target: peerId, data }));
+      peer.on('connect', () => {
+        dataChannels[peerId] = peer;
+        peer.on('data', data => { try { handleP2PMessage(peerId, JSON.parse(data.toString())); } catch(e){} });
+        broadcastP2P({ type:'player_state', id:game.myId, pos: game.camera.position.toArray(), rot: [game.camera.rotation.x, game.camera.rotation.y, game.camera.rotation.z], health: game.health, ammo: game.ammo, team: game.myTeam });
+      });
+      peer.on('error', err => console.error(err));
+      peers[peerId] = peer;
+    }
+
+    function handleSignal(from, data) {
+      if (!peers[from]) createPeer(from, false);
+      peers[from].signal(data);
+    }
+
+    function broadcastP2P(msg) {
+      const raw = JSON.stringify(msg);
+      Object.values(dataChannels).forEach(ch => { if (ch.connected) ch.send(raw); });
+    }
+
+    function handleP2PMessage(from, msg) {
+      switch(msg.type) {
+        case 'player_state': updateRemotePlayer(from, msg); break;
+        case 'shoot': createShootEffect(msg.origin, msg.dir); break;
+        case 'hit': applyDamage(msg.target, msg.damage, msg.hitbox); break;
+        case 'reload': /* индикация */ break;
+        case 'round_end': endRound(msg.winnerTeam); break;
+        case 'game_over': gameOver(msg.winnerTeam); break;
+        case 'chat': addChatMessage(msg.from, msg.text); break;
+      }
+    }
+
+    setInterval(() => {
+      if (!game.roundActive || !game.camera) return;
+      broadcastP2P({ type:'player_state', id:game.myId, pos: game.camera.position.toArray(), rot: [game.camera.rotation.x, game.camera.rotation.y, game.camera.rotation.z], health: game.health, ammo: game.ammo, team: game.myTeam });
+    }, 50);
+
+    function updateRemotePlayer(id, state) {
+      if (!game.players[id]) { game.players[id] = { id, team:state.team, health:state.health, mesh:null }; createPlayerMesh(id); }
+      const p = game.players[id];
+      p.health = state.health;
+      if (p.mesh) { p.mesh.position.fromArray(state.pos); p.mesh.rotation.set(state.rot[0], state.rot[1], state.rot[2]); }
+    }
+
+    function createPlayerMesh(id) {
+      const group = new THREE.Group();
+      const body = new THREE.Mesh(new THREE.BoxGeometry(1,2,1), new THREE.MeshLambertMaterial({color:0xff0000}));
+      body.position.y = 1; body.userData = { playerId:id, hitbox:'body' };
+      const head = new THREE.Mesh(new THREE.BoxGeometry(0.5,0.5,0.5), new THREE.MeshLambertMaterial({color:0xffff00}));
+      head.position.y = 2.25; head.userData = { playerId:id, hitbox:'head' };
+      group.add(body); group.add(head);
+      game.scene.add(group);
+      game.players[id].mesh = group;
+    }
+
+    function shoot() {
+      if (!game.roundActive || game.ammo <= 0 || game.reloading || game.gameOver) return;
+      const now = performance.now()/1000;
+      if (now - game.lastShot < game.shootCooldown) return;
+      game.lastShot = now; game.ammo--;
+      updateHUD();
+      const dir = new THREE.Vector3(0,0,-1).applyQuaternion(game.camera.quaternion);
+      dir.x += (Math.random()-0.5)*0.03; dir.y += (Math.random()-0.5)*0.03; dir.z += (Math.random()-0.5)*0.03;
+      dir.normalize();
+      game.camera.rotation.x += 0.01;
+      const raycaster = new THREE.Raycaster(game.camera.position.clone(), dir);
+      const intersects = raycaster.intersectObjects(game.scene.children, true);
+      for (const inter of intersects) {
+        const obj = inter.object;
+        if (obj.userData.playerId && obj.userData.hitbox) {
+          if (obj.userData.playerId === game.myId) continue;
+          if (game.players[obj.userData.playerId]?.team === game.myTeam) continue;
+          const dmg = obj.userData.hitbox === 'head' ? 100 : 20;
+          applyDamage(obj.userData.playerId, dmg, obj.userData.hitbox);
+          break;
+        }
+      }
+      broadcastP2P({ type:'shoot', origin: game.camera.position.toArray(), dir: dir.toArray() });
+      if (game.ammo === 0) reload();
+    }
+
+    function applyDamage(targetId, damage, hitbox) {
+      if (!game.players[targetId]) return;
+      game.players[targetId].health = Math.max(0, game.players[targetId].health - damage);
+      broadcastP2P({ type:'hit', target: targetId, damage, hitbox });
+      if (game.players[targetId].health <= 0) checkRoundEnd();
+      updateHUD();
+    }
+
+    function reload() {
+      if (game.reloading || game.ammo === game.maxAmmo) return;
+      game.reloading = true; broadcastP2P({ type:'reload' });
+      setTimeout(() => { game.ammo = game.maxAmmo; game.reloading = false; updateHUD(); }, 3000);
+    }
+
+    function updateHUD() {
+      ammoDisplay.textContent = `${game.ammo}/${game.maxAmmo}${game.reloading ? ' (перезарядка)' : ''}`;
+      healthFill.style.width = `${game.health}%`; healthValue.textContent = game.health;
+      roundInfo.textContent = `Раунд ${game.round}/${game.maxRounds} | ${game.myTeam?.toUpperCase()}`;
+    }
+
+    function startRound() {
+      game.roundActive = true; game.freezeUntil = Date.now() + 5000;
+      game.health = 100; game.ammo = game.maxAmmo; game.reloading = false;
+      broadcastP2P({ type:'round_start', round: game.round, freezeUntil: game.freezeUntil });
+    }
+
+    function endRound(winnerTeam) {
+      game.roundActive = false;
+      if (winnerTeam === game.myTeam) fetch('/api/win', { method:'POST', headers:{'Authorization':'Bearer '+token} });
+      game.round++;
+      if (game.round > game.maxRounds) { gameOver(winnerTeam); return; }
+      if (game.round === 4) { game.myTeam = game.myTeam === 't' ? 'ct' : 't'; Object.values(game.players).forEach(p => p.team = p.team === 't' ? 'ct' : 't'); }
+      setTimeout(startRound, 2000);
+    }
+
+    function gameOver(winnerTeam) {
+      game.gameOver = true; broadcastP2P({ type:'game_over', winnerTeam }); alert(`Победила команда ${winnerTeam}`); leaveGame();
+    }
+
+    function checkRoundEnd() {
+      const teamsAlive = { t:false, ct:false };
+      Object.values(game.players).forEach(p => { if (p.health > 0) teamsAlive[p.team] = true; });
+      if (!teamsAlive.t) endRound('ct');
+      else if (!teamsAlive.ct) endRound('t');
+    }
+
+    function leaveGame() {
+      document.exitPointerLock();
+      if (game.renderer) { game.renderer.dispose(); document.getElementById('gameCanvas').innerHTML = ''; }
+      game.scene = null; game.camera = null; game.renderer = null;
+      Object.values(peers).forEach(p => { if(p) p.destroy(); }); peers = {}; dataChannels = {};
+      showMenu();
+    }
+
+    function createShootEffect(originArr, dirArr) {
+      if (!game.scene) return;
+      const origin = new THREE.Vector3().fromArray(originArr);
+      const dir = new THREE.Vector3().fromArray(dirArr);
+      const tracer = new THREE.Mesh(new THREE.CylinderGeometry(0.02,0.02,2,4), new THREE.MeshBasicMaterial({color:0xffff00}));
+      tracer.position.copy(origin).add(dir.clone().multiplyScalar(1));
+      tracer.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), dir);
+      game.scene.add(tracer);
+      setTimeout(() => game.scene.remove(tracer), 100);
+    }
+
+    function addChatMessage(from, text) {
+      const div = document.createElement('div'); div.textContent = `${from}: ${text}`;
+      chatBox.appendChild(div); chatBox.scrollTop = chatBox.scrollHeight;
+    }
+
+    // Игровой цикл
+    function gameLoop() {
+      requestAnimationFrame(gameLoop);
+      if (!game.renderer || !game.scene) return;
+      if (game.roundActive && Date.now() > game.freezeUntil) handleMovement();
+      game.renderer.render(game.scene, game.camera);
+    }
+    function handleMovement() {
+      if (!game.mouseLocked) return;
+      const speed = 5 * 0.1;
+      const dir = new THREE.Vector3();
+      if (game.keys['KeyW']) dir.z -= 1;
+      if (game.keys['KeyS']) dir.z += 1;
+      if (game.keys['KeyA']) dir.x -= 1;
+      if (game.keys['KeyD']) dir.x += 1;
+      if (game.keys['Space'] || game.keys['KeyQ']) { if (game.camera.position.y <= 1) game.camera.position.y = 2; }
+      dir.normalize().multiplyScalar(speed);
+      game.camera.position.add(dir);
+      if (game.camera.position.y > 1) game.camera.position.y -= 0.2; else game.camera.position.y = 1;
+    }
+
+    // Управление
+    document.addEventListener('keydown', e => {
+      game.keys[e.code] = true;
+      if (e.code === 'KeyR') reload();
+      if (e.code === 'Period' && screens.game.classList.contains('active')) { chatInput.style.display = chatInput.style.display === 'none' ? 'block' : 'none'; if (chatInput.style.display === 'block') chatInput.focus(); }
+      if (e.code === 'KeyL' && screens.game.classList.contains('active')) { if (confirm('Сдаться?')) leaveGame(); }
+    });
+    document.addEventListener('keyup', e => game.keys[e.code] = false);
+    document.addEventListener('mousemove', e => {
+      if (game.mouseLocked) { game.camera.rotation.y -= e.movementX * 0.002; game.camera.rotation.x -= e.movementY * 0.002; game.camera.rotation.x = Math.max(-Math.PI/2, Math.min(Math.PI/2, game.camera.rotation.x)); }
+    });
+    document.addEventListener('pointerlockchange', () => { game.mouseLocked = document.pointerLockElement !== null; });
+    document.addEventListener('mousedown', e => { if (e.button === 0 && game.mouseLocked && game.roundActive) shoot(); });
+    chatInput.addEventListener('keydown', e => {
+      if (e.key === 'Enter') { broadcastP2P({ type:'chat', text: chatInput.value, from: user.username }); addChatMessage(user.username, chatInput.value); chatInput.value = ''; chatInput.style.display = 'none'; }
+    });
+
+    // ==================== РЕДАКТОР КАРТ ====================
+    function initEditor() {
+      editor.scene = new THREE.Scene(); editor.scene.background = new THREE.Color(0x87ceeb);
+      editor.camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
+      editor.renderer = new THREE.WebGLRenderer({ antialias:true });
+      editor.renderer.setSize(window.innerWidth, window.innerHeight);
+      document.getElementById('editorCanvas').appendChild(editor.renderer.domElement);
+      editor.controls = new THREE.OrbitControls(editor.camera, editor.renderer.domElement);
+      editor.controls.enableDamping = true; editor.controls.target.set(0,1,0);
+      editor.camera.position.set(10,10,10); editor.controls.update();
+      editor.objects = []; editor.spawns = []; editor.bombSite = null;
+      editor.renderer.domElement.addEventListener('click', onEditorClick);
+      function animate() { requestAnimationFrame(animate); if (editor.renderer) { editor.controls.update(); editor.renderer.render(editor.scene, editor.camera); } }
+      animate();
+    }
+    function onEditorClick(event) {
+      const rect = editor.renderer.domElement.getBoundingClientRect();
+      const mouse = new THREE.Vector2(((event.clientX - rect.left) / rect.width) * 2 - 1, -((event.clientY - rect.top) / rect.height) * 2 + 1);
+      const raycaster = new THREE.Raycaster(); raycaster.setFromCamera(mouse, editor.camera);
+      const intersects = raycaster.intersectObjects(editor.scene.children, true);
+      if (intersects.length > 0) {
+        let obj = intersects[0].object;
+        while (obj && !obj.userData.editorType) obj = obj.parent;
+        if (obj && obj.userData.editorType) selectObject(obj); else deselectObject();
+      } else deselectObject();
+    }
+    function selectObject(obj) {
+      if (editor.selectedObject === obj) return; deselectObject();
+      editor.selectedObject = obj; obj.userData.originalColor = obj.material.color.getHex(); obj.material.color.set(0x00ff00);
+      document.getElementById('editorMsg').style.display = 'block';
+    }
+    function deselectObject() {
+      if (editor.selectedObject) { editor.selectedObject.material.color.set(editor.selectedObject.userData.originalColor); editor.selectedObject = null; document.getElementById('editorMsg').style.display = 'none'; }
+    }
+    document.addEventListener('keydown', (e) => {
+      if (!screens.editor.classList.contains('active') || !editor.selectedObject) return;
+      if (e.code.startsWith('Arrow')) {
+        e.preventDefault();
+        const move = 0.5;
+        if (e.code === 'ArrowUp') editor.selectedObject.position.z -= move;
+        if (e.code === 'ArrowDown') editor.selectedObject.position.z += move;
+        if (e.code === 'ArrowLeft') editor.selectedObject.position.x -= move;
+        if (e.code === 'ArrowRight') editor.selectedObject.position.x += move;
+        updateEditorData(editor.selectedObject);
+      }
+    });
+    function updateEditorData(obj) {
+      const idx = obj.userData.editorIndex;
+      if (obj.userData.editorType === 'box' || obj.userData.editorType === 'wall') {
+        editor.objects[idx].data = { ...editor.objects[idx].data, x: obj.position.x, y: obj.position.y, z: obj.position.z };
+      } else if (obj.userData.editorType === 'spawn') {
+        editor.spawns[idx].data = { ...editor.spawns[idx].data, x: obj.position.x, y: obj.position.y, z: obj.position.z };
+      } else if (obj.userData.editorType === 'bomb') {
+        editor.bombSite.data = { ...editor.bombSite.data, x: obj.position.x, y: obj.position.y, z: obj.position.z };
+      }
+    }
+    function editorAddBox() {
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(2,2,2), new THREE.MeshLambertMaterial({color:0x8B7355}));
+      mesh.position.set(0,1,0); mesh.userData = { editorType:'box', editorIndex: editor.objects.length };
+      editor.scene.add(mesh); editor.objects.push({ type:'box', mesh, data:{ x:0,y:1,z:0,w:2,h:2,d:2 } });
+    }
+    function editorAddWall() { /* аналогично */ }
+    function editorAddSpawn(team) {
+      const color = team === 't' ? 0xff0000 : 0x0000ff;
+      const marker = new THREE.Mesh(new THREE.SphereGeometry(0.5), new THREE.MeshBasicMaterial({color}));
+      marker.position.set(0,1,0); marker.userData = { editorType:'spawn', editorIndex: editor.spawns.length, team };
+      editor.scene.add(marker); editor.spawns.push({ team, mesh:marker, data:{ team, x:0,y:1,z:0 } });
+    }
+    function editorAddBombSite() { /* маркер */ }
+    function editorSaveMap() {
+      const name = prompt('Название карты:');
+      if (!name) return;
+      const data = { spawns: editor.spawns.map(s => s.data), bombSite: editor.bombSite?.data || {x:0,y:0,z:0}, objects: editor.objects.map(o => o.data) };
+      fetch('/api/maps', { method:'POST', headers:{'Content-Type':'application/json','Authorization':'Bearer '+token}, body: JSON.stringify({name, data}) })
+        .then(r=>r.json()).then(() => alert('Сохранено!'));
+    }
+    function editorLoadMap() {
+      fetch('/api/maps', { headers:{'Authorization':'Bearer '+token} }).then(r=>r.json()).then(maps => {
+        const id = prompt('ID карты:\n' + maps.map(m => `${m._id}: ${m.name}`).join('\n'));
+        if (!id) return;
+        fetch('/api/maps/'+id, { headers:{'Authorization':'Bearer '+token} }).then(r=>r.json()).then(m => {
+          while(editor.scene.children.length) editor.scene.remove(editor.scene.children[0]);
+          editor.objects = []; editor.spawns = []; editor.bombSite = null;
+          m.data.objects?.forEach(obj => { /* воссоздание объектов */ });
+          m.data.spawns?.forEach(s => { /* воссоздание спавнов */ });
+        });
+      });
+    }
+    function openEditor() { showScreen('editor'); if (!editor.renderer) initEditor(); }
+    function closeEditor() { showMenu(); }
 
     // Старт
-    if (token) {
-      console.log('Найден токен, подключаю WebSocket');
-      connectWS();
-    } else {
-      console.log('Токена нет, показываю форму входа');
-      showScreen(menuScreen);
-    }
+    if (token) connectWS(); else { showScreen('menu'); authBlock.style.display='block'; }
+    gameLoop();
   </script>
 </body>
 </html>
