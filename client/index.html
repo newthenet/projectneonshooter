@@ -20,14 +20,15 @@
     button.red { background:var(--red); }
     .flex { display:flex; gap:8px; } .flex>* { flex:1; }
     #gameCanvas, #editorCanvas { position:absolute; top:0; left:0; width:100%; height:100%; }
-    #hud { position:absolute; bottom:20px; left:50%; transform:translateX(-50%); display:flex; gap:20px; align-items:center; background:rgba(0,0,0,0.7); padding:8px 16px; border-radius:8px; }
+    #hud { position:absolute; bottom:20px; left:50%; transform:translateX(-50%); display:flex; gap:20px; align-items:center; background:rgba(0,0,0,0.7); padding:8px 16px; border-radius:8px; z-index:5; }
     .health-bar { width:200px; height:10px; background:#333; border-radius:5px; overflow:hidden; }
     .health-fill { height:100%; width:100%; background:var(--green); transition:width 0.2s; }
     #leaderboardList div { padding:4px; border-bottom:1px solid #30363d; }
-    #chatBox { position:fixed; bottom:80px; left:10px; width:300px; max-height:120px; overflow-y:auto; color:#fff; font-size:14px; background:rgba(0,0,0,0.6); padding:5px; border-radius:4px; }
-    #chatInput { position:fixed; bottom:50px; left:10px; width:300px; display:none; padding:8px; background:#222; color:#fff; border:1px solid #444; border-radius:4px; }
+    #chatBox { position:fixed; bottom:80px; left:10px; width:300px; max-height:120px; overflow-y:auto; color:#fff; font-size:14px; background:rgba(0,0,0,0.6); padding:5px; border-radius:4px; z-index:10; }
+    #chatInput { position:fixed; bottom:50px; left:10px; width:300px; display:none; padding:8px; background:#222; color:#fff; border:1px solid #444; border-radius:4px; z-index:10; }
     .editor-panel { position:absolute; top:10px; left:10px; background:var(--panel); padding:10px; border-radius:8px; display:flex; flex-direction:column; gap:4px; z-index:10; }
     #editorMsg { position:absolute; bottom:20px; left:50%; transform:translateX(-50%); background:rgba(0,0,0,0.7); color:#fff; padding:8px 16px; border-radius:6px; z-index:10; display:none; }
+    #clickOverlay { position:absolute; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.7); color:#fff; display:none; justify-content:center; align-items:center; z-index:20; cursor:pointer; font-size:24px; }
   </style>
 </head>
 <body>
@@ -74,6 +75,7 @@
     <!-- ИГРА -->
     <div id="gameScreen" class="screen">
       <div id="gameCanvas"></div>
+      <div id="clickOverlay">Кликните, чтобы начать игру</div>
       <div id="hud" style="display:none;">
         <span id="ammoDisplay">10/10</span>
         <div class="health-bar"><div id="healthFill" class="health-fill"></div></div>
@@ -148,6 +150,7 @@
     const roundInfo = document.getElementById('roundInfo');
     const chatBox = document.getElementById('chatBox');
     const chatInput = document.getElementById('chatInput');
+    const clickOverlay = document.getElementById('clickOverlay');
 
     function showScreen(name) {
       Object.values(screens).forEach(s => s.classList.remove('active'));
@@ -155,6 +158,8 @@
       if (name === 'game' && game.renderer) {
         document.getElementById('gameCanvas').appendChild(game.renderer.domElement);
         hud.style.display = 'flex';
+        // Фокус для клавиатуры (чат и движение заработают после захвата мыши)
+        document.body.focus();
       } else hud.style.display = 'none';
     }
 
@@ -283,8 +288,16 @@
       loadMap(mapData || defaultMapData());
       showScreen('game');
       updateHUD();
+
+      // Показать оверлей, ждать клика для захвата мыши
+      clickOverlay.style.display = 'flex';
+      clickOverlay.onclick = () => {
+        clickOverlay.style.display = 'none';
+        document.body.requestPointerLock();
+        document.body.focus();
+      };
+
       players.forEach(p => { if (p.id !== user.id) createPeer(p.id, true); });
-      document.body.requestPointerLock();
     }
 
     function initGameRenderer() {
@@ -503,17 +516,28 @@
     document.addEventListener('keydown', e => {
       game.keys[e.code] = true;
       if (e.code === 'KeyR') reload();
-      if (e.code === 'Period' && screens.game.classList.contains('active')) { chatInput.style.display = chatInput.style.display === 'none' ? 'block' : 'none'; if (chatInput.style.display === 'block') chatInput.focus(); }
+      if (e.code === 'Period' && screens.game.classList.contains('active')) {
+        chatInput.style.display = chatInput.style.display === 'none' ? 'block' : 'none';
+        if (chatInput.style.display === 'block') chatInput.focus();
+      }
       if (e.code === 'KeyL' && screens.game.classList.contains('active')) { if (confirm('Сдаться?')) leaveGame(); }
     });
     document.addEventListener('keyup', e => game.keys[e.code] = false);
     document.addEventListener('mousemove', e => {
-      if (game.mouseLocked) { game.camera.rotation.y -= e.movementX * 0.002; game.camera.rotation.x -= e.movementY * 0.002; game.camera.rotation.x = Math.max(-Math.PI/2, Math.min(Math.PI/2, game.camera.rotation.x)); }
+      if (game.mouseLocked) {
+        game.camera.rotation.y -= e.movementX * 0.002;
+        game.camera.rotation.x -= e.movementY * 0.002;
+        game.camera.rotation.x = Math.max(-Math.PI/2, Math.min(Math.PI/2, game.camera.rotation.x));
+      }
     });
     document.addEventListener('pointerlockchange', () => { game.mouseLocked = document.pointerLockElement !== null; });
     document.addEventListener('mousedown', e => { if (e.button === 0 && game.mouseLocked && game.roundActive) shoot(); });
     chatInput.addEventListener('keydown', e => {
-      if (e.key === 'Enter') { broadcastP2P({ type:'chat', text: chatInput.value, from: user.username }); addChatMessage(user.username, chatInput.value); chatInput.value = ''; chatInput.style.display = 'none'; }
+      if (e.key === 'Enter') {
+        broadcastP2P({ type:'chat', text: chatInput.value, from: user.username });
+        addChatMessage(user.username, chatInput.value);
+        chatInput.value = ''; chatInput.style.display = 'none';
+      }
     });
 
     // ==================== РЕДАКТОР КАРТ ====================
@@ -531,6 +555,7 @@
       function animate() { requestAnimationFrame(animate); if (editor.renderer) { editor.controls.update(); editor.renderer.render(editor.scene, editor.camera); } }
       animate();
     }
+
     function onEditorClick(event) {
       const rect = editor.renderer.domElement.getBoundingClientRect();
       const mouse = new THREE.Vector2(((event.clientX - rect.left) / rect.width) * 2 - 1, -((event.clientY - rect.top) / rect.height) * 2 + 1);
@@ -542,6 +567,7 @@
         if (obj && obj.userData.editorType) selectObject(obj); else deselectObject();
       } else deselectObject();
     }
+
     function selectObject(obj) {
       if (editor.selectedObject === obj) return; deselectObject();
       editor.selectedObject = obj; obj.userData.originalColor = obj.material.color.getHex(); obj.material.color.set(0x00ff00);
@@ -550,6 +576,7 @@
     function deselectObject() {
       if (editor.selectedObject) { editor.selectedObject.material.color.set(editor.selectedObject.userData.originalColor); editor.selectedObject = null; document.getElementById('editorMsg').style.display = 'none'; }
     }
+
     document.addEventListener('keydown', (e) => {
       if (!screens.editor.classList.contains('active') || !editor.selectedObject) return;
       if (e.code.startsWith('Arrow')) {
@@ -562,6 +589,7 @@
         updateEditorData(editor.selectedObject);
       }
     });
+
     function updateEditorData(obj) {
       const idx = obj.userData.editorIndex;
       if (obj.userData.editorType === 'box' || obj.userData.editorType === 'wall') {
@@ -572,19 +600,29 @@
         editor.bombSite.data = { ...editor.bombSite.data, x: obj.position.x, y: obj.position.y, z: obj.position.z };
       }
     }
+
     function editorAddBox() {
       const mesh = new THREE.Mesh(new THREE.BoxGeometry(2,2,2), new THREE.MeshLambertMaterial({color:0x8B7355}));
       mesh.position.set(0,1,0); mesh.userData = { editorType:'box', editorIndex: editor.objects.length };
       editor.scene.add(mesh); editor.objects.push({ type:'box', mesh, data:{ x:0,y:1,z:0,w:2,h:2,d:2 } });
     }
-    function editorAddWall() { /* аналогично */ }
+    function editorAddWall() {
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(1,4,10), new THREE.MeshLambertMaterial({color:0x888888}));
+      mesh.position.set(0,2,0); mesh.userData = { editorType:'wall', editorIndex: editor.objects.length };
+      editor.scene.add(mesh); editor.objects.push({ type:'wall', mesh, data:{ x:0,y:2,z:0,w:1,h:4,d:10 } });
+    }
     function editorAddSpawn(team) {
       const color = team === 't' ? 0xff0000 : 0x0000ff;
       const marker = new THREE.Mesh(new THREE.SphereGeometry(0.5), new THREE.MeshBasicMaterial({color}));
       marker.position.set(0,1,0); marker.userData = { editorType:'spawn', editorIndex: editor.spawns.length, team };
       editor.scene.add(marker); editor.spawns.push({ team, mesh:marker, data:{ team, x:0,y:1,z:0 } });
     }
-    function editorAddBombSite() { /* маркер */ }
+    function editorAddBombSite() {
+      if (editor.bombSite) editor.scene.remove(editor.bombSite.mesh);
+      const marker = new THREE.Mesh(new THREE.BoxGeometry(1,0.2,1), new THREE.MeshBasicMaterial({color:0xffff00}));
+      marker.position.set(0,0,0); marker.userData = { editorType:'bomb', editorIndex:0 };
+      editor.scene.add(marker); editor.bombSite = { mesh:marker, data:{ x:0,y:0,z:0 } };
+    }
     function editorSaveMap() {
       const name = prompt('Название карты:');
       if (!name) return;
@@ -599,8 +637,24 @@
         fetch('/api/maps/'+id, { headers:{'Authorization':'Bearer '+token} }).then(r=>r.json()).then(m => {
           while(editor.scene.children.length) editor.scene.remove(editor.scene.children[0]);
           editor.objects = []; editor.spawns = []; editor.bombSite = null;
-          m.data.objects?.forEach(obj => { /* воссоздание объектов */ });
-          m.data.spawns?.forEach(s => { /* воссоздание спавнов */ });
+          m.data.objects?.forEach(obj => {
+            let mesh;
+            if (obj.type === 'box') mesh = new THREE.Mesh(new THREE.BoxGeometry(obj.w,obj.h,obj.d), new THREE.MeshLambertMaterial({color:0x8B7355}));
+            else if (obj.type === 'wall') mesh = new THREE.Mesh(new THREE.BoxGeometry(obj.w,obj.h,obj.d), new THREE.MeshLambertMaterial({color:0x888888}));
+            if (mesh) { mesh.position.set(obj.x,obj.y,obj.z); mesh.userData = { editorType:obj.type, editorIndex: editor.objects.length }; editor.scene.add(mesh); editor.objects.push({ type:obj.type, mesh, data:obj }); }
+          });
+          m.data.spawns?.forEach(s => {
+            const color = s.team === 't' ? 0xff0000 : 0x0000ff;
+            const marker = new THREE.Mesh(new THREE.SphereGeometry(0.5), new THREE.MeshBasicMaterial({color}));
+            marker.position.set(s.x,s.y,s.z); marker.userData = { editorType:'spawn', editorIndex: editor.spawns.length, team: s.team };
+            editor.scene.add(marker); editor.spawns.push({ team:s.team, mesh:marker, data:s });
+          });
+          if (m.data.bombSite) {
+            const marker = new THREE.Mesh(new THREE.BoxGeometry(1,0.2,1), new THREE.MeshBasicMaterial({color:0xffff00}));
+            marker.position.set(m.data.bombSite.x, m.data.bombSite.y, m.data.bombSite.z);
+            marker.userData = { editorType:'bomb' }; editor.scene.add(marker);
+            editor.bombSite = { mesh:marker, data:m.data.bombSite };
+          }
         });
       });
     }
