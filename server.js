@@ -301,17 +301,16 @@ wss.on('connection', (ws) => {
   });
 });
 
-// ========== Статистика каждые 10 секунд ==========
+// Статистика каждые 10 секунд
 setInterval(() => {
   const mem = process.memoryUsage();
   const heapUsedMB = Math.round(mem.heapUsed / 1024 / 1024);
   const rssMB = Math.round(mem.rss / 1024 / 1024);
   const cpuUsage = process.cpuUsage();
-  const cpuPercent = (cpuUsage.user + cpuUsage.system) / 1000000; // секунды
-  console.log(`[STAT] RAM: heap ${heapUsedMB} MB / rss ${rssMB} MB (limit ~512 MB) | CPU user+system last tick: ${cpuPercent.toFixed(2)}s`);
+  const cpuPercent = (cpuUsage.user + cpuUsage.system) / 1000000;
+  console.log(`[STAT] RAM: heap ${heapUsedMB} MB / rss ${rssMB} MB (limit ~512 MB) | CPU user+system: ${cpuPercent.toFixed(2)}s`);
 }, 10000);
 
-// Запуск
 connectDB().then(() => {
   server.listen(process.env.PORT || 3000, () => console.log('Сервер запущен'));
 });
