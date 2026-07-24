@@ -11,6 +11,7 @@
     "bcrypt": "^5.1.0",
     "jsonwebtoken": "^9.0.0",
     "mongodb": "^6.3.0",
-    "uuid": "^9.0.0"
+    "uuid": "^9.0.0",
+    "express-rate-limit": "^7.1.0"
   }
 }
