@@ -2,46 +2,48 @@
 <html lang="ru">
 <head>
   <meta charset="UTF-8">
-  <title>Project Neon – Test Lobby</title>
+  <title>Project Neon – Lobby</title>
   <style>
     body { background:#0d1117; color:#c9d1d9; font-family:sans-serif; display:flex; justify-content:center; align-items:center; height:100vh; margin:0; }
-    .panel { background:#161b22; padding:24px; border-radius:12px; min-width:300px; text-align:center; }
+    .panel { background:#161b22; padding:24px; border-radius:12px; min-width:320px; text-align:center; }
     button { width:100%; margin:6px 0; padding:10px; border-radius:8px; border:1px solid #30363d; background:#21262d; color:#c9d1d9; cursor:pointer; }
     button:hover { background:#30363d; }
     input { width:100%; padding:10px; margin:6px 0; border-radius:8px; border:1px solid #30363d; background:#0d1117; color:#c9d1d9; }
     .hidden { display:none; }
     ul { list-style:none; padding:0; }
-    li { padding:4px; background:#21262d; margin:4px 0; border-radius:4px; }
+    li { padding:5px; background:#21262d; margin:4px 0; border-radius:4px; }
+    #lobbyId { font-weight:bold; color:#58a6ff; }
   </style>
 </head>
 <body>
   <div id="app">
     <!-- Меню -->
-    <div id="menu" class="panel">
+    <div id="menuScreen" class="panel">
       <h2>Project Neon</h2>
-      <div id="auth">
-        <input id="username" placeholder="Логин">
-        <input id="password" type="password" placeholder="Пароль">
+      <div id="authForms">
+        <input id="loginUser" placeholder="Логин">
+        <input id="loginPass" type="password" placeholder="Пароль">
         <button onclick="login()">Войти</button>
         <button onclick="register()">Регистрация</button>
       </div>
-      <div id="user" class="hidden">
+      <div id="userInfo" class="hidden">
         <p id="displayName"></p>
         <button onclick="showLobbies()">Играть</button>
         <button onclick="logout()">Выйти</button>
       </div>
     </div>
+
     <!-- Лобби -->
-    <div id="lobbies" class="panel hidden">
-      <h3>Лобби</h3>
+    <div id="lobbyScreen" class="panel hidden">
+      <h3>Список лобби</h3>
       <div id="lobbyList">Загрузка...</div>
       <button onclick="createLobby()">Создать лобби</button>
       <div id="myLobby" class="hidden">
-        <h4>Ваше лобби <span id="lobbyId"></span></h4>
-        <ul id="players"></ul>
-        <button onclick="startGame()">Начать игру</button>
+        <h4>Лобби <span id="lobbyId"></span></h4>
+        <ul id="playerList"></ul>
+        <button id="startBtn" onclick="startGame()">Начать игру</button>
       </div>
-      <button onclick="leaveLobby()">Назад</button>
+      <button onclick="leaveLobby()">Назад в меню</button>
     </div>
   </div>
 
@@ -54,61 +56,79 @@
     let inLobby = false;
 
     // UI элементы
-    const menuDiv = document.getElementById('menu');
-    const lobbiesDiv = document.getElementById('lobbies');
-    const authDiv = document.getElementById('auth');
-    const userDiv = document.getElementById('user');
+    const menuScreen = document.getElementById('menuScreen');
+    const lobbyScreen = document.getElementById('lobbyScreen');
+    const authForms = document.getElementById('authForms');
+    const userInfo = document.getElementById('userInfo');
     const displayName = document.getElementById('displayName');
     const lobbyList = document.getElementById('lobbyList');
-    const myLobbyDiv = document.getElementById('myLobby');
+    const myLobby = document.getElementById('myLobby');
     const lobbyIdSpan = document.getElementById('lobbyId');
-    const playersUl = document.getElementById('players');
+    const playerList = document.getElementById('playerList');
+    const startBtn = document.getElementById('startBtn');
 
-    function show(div) {
-      menuDiv.classList.add('hidden');
-      lobbiesDiv.classList.add('hidden');
-      div.classList.remove('hidden');
+    function showScreen(screen) {
+      menuScreen.classList.add('hidden');
+      lobbyScreen.classList.add('hidden');
+      screen.classList.remove('hidden');
     }
 
+    // ==================== WebSocket ====================
     function connectWS() {
       if (ws) { ws.onclose = null; ws.close(); }
       ws = new WebSocket(SERVER);
-      ws.onopen = () => { if (token) ws.send(JSON.stringify({ type:'auth', token })); };
+      ws.onopen = () => {
+        console.log('WebSocket открыт');
+        if (token) {
+          console.log('Отправляю auth с токеном');
+          ws.send(JSON.stringify({ type:'auth', token }));
+        }
+      };
       ws.onmessage = (e) => {
         let msg;
-        try { msg = JSON.parse(e.data); } catch(ex) { return; }
+        try { msg = JSON.parse(e.data); } catch(ex) { console.error('Ошибка парсинга:', ex); return; }
+        console.log('Получено сообщение:', msg.type, msg);
         handleMessage(msg);
       };
-      ws.onclose = () => setTimeout(connectWS, 3000);
+      ws.onclose = () => {
+        console.log('WebSocket закрыт, переподключение через 3 сек');
+        setTimeout(connectWS, 3000);
+      };
+      ws.onerror = (err) => console.error('WebSocket ошибка:', err);
     }
 
     function handleMessage(msg) {
       switch(msg.type) {
         case 'auth_ok':
           user = msg.user;
-          showMenu();
+          console.log('Авторизация успешна:', user);
+          showMainMenu();
           break;
         case 'lobby_list':
+          console.log('Получен список лобби:', msg.lobbies);
           if (!inLobby) renderLobbyList(msg.lobbies);
           break;
         case 'lobby_created':
           currentLobbyId = msg.lobbyId;
           inLobby = true;
-          myLobbyDiv.classList.remove('hidden');
+          console.log('Лобби создано, ID:', currentLobbyId);
+          myLobby.classList.remove('hidden');
           lobbyIdSpan.textContent = currentLobbyId;
+          // Ждём lobby_update, который должен прийти сразу после
           break;
         case 'lobby_update':
+          console.log('Обновление игроков в лобби:', msg.players);
           renderPlayers(msg.players);
-          myLobbyDiv.classList.remove('hidden');
-          // Показываем кнопку "Начать игру" только хосту
-          if (msg.players[0]?.id === user.id) {
-            document.querySelector('#myLobby button').style.display = 'block';
+          myLobby.classList.remove('hidden');
+          // Показать кнопку старта только хосту
+          if (msg.players.length > 0 && msg.players[0].id === user.id) {
+            startBtn.style.display = 'block';
           } else {
-            document.querySelector('#myLobby button').style.display = 'none';
+            startBtn.style.display = 'none';
           }
           break;
         case 'game_starting':
-          alert('Игра начнётся через ' + msg.delay + ' секунд');
+          alert(`Игра начнётся через ${msg.delay} секунд`);
           break;
         case 'game_started':
           alert('Игра началась!');
@@ -116,52 +136,79 @@
         case 'error':
           alert(msg.text);
           break;
+        default:
+          console.log('Неизвестный тип сообщения:', msg.type);
       }
     }
 
     function send(obj) {
-      if (ws?.readyState === 1) ws.send(JSON.stringify(obj));
+      if (ws?.readyState === WebSocket.OPEN) {
+        console.log('Отправка сообщения:', obj);
+        ws.send(JSON.stringify(obj));
+      } else {
+        console.error('WebSocket не открыт, невозможно отправить');
+      }
     }
 
+    // ==================== UI логика ====================
     function login() {
-      const u = document.getElementById('username').value.trim();
-      const p = document.getElementById('password').value;
+      const u = document.getElementById('loginUser').value.trim();
+      const p = document.getElementById('loginPass').value;
+      console.log('Попытка входа:', u);
       fetch('/api/login', {
         method:'POST', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({username:u, password:p})
       }).then(r=>r.json()).then(d => {
-        if(d.token) { token=d.token; localStorage.setItem('token',token); user=d.user; connectWS(); }
-        else alert(d.error);
+        console.log('Ответ сервера на вход:', d);
+        if(d.token) {
+          token = d.token;
+          localStorage.setItem('token', token);
+          user = d.user;
+          connectWS();
+        } else {
+          alert(d.error || 'Ошибка входа');
+        }
       });
     }
 
     function register() {
-      const u = document.getElementById('username').value.trim();
-      const p = document.getElementById('password').value;
+      const u = document.getElementById('loginUser').value.trim();
+      const p = document.getElementById('loginPass').value;
+      console.log('Регистрация:', u);
       fetch('/api/register', {
         method:'POST', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({username:u, password:p})
       }).then(r=>r.json()).then(d => {
-        if(d.token) { token=d.token; localStorage.setItem('token',token); user=d.user; connectWS(); }
-        else alert(d.error);
+        console.log('Ответ регистрации:', d);
+        if(d.token) {
+          token = d.token;
+          localStorage.setItem('token', token);
+          user = d.user;
+          connectWS();
+        } else {
+          alert(d.error || 'Ошибка регистрации');
+        }
       });
     }
 
-    function showMenu() {
-      authDiv.classList.add('hidden');
-      userDiv.classList.remove('hidden');
+    function showMainMenu() {
+      authForms.classList.add('hidden');
+      userInfo.classList.remove('hidden');
       displayName.textContent = user.username + (user.is_neon ? ' ✔' : '');
-      show(menuDiv);
+      showScreen(menuScreen);
     }
 
     function showLobbies() {
-      show(lobbiesDiv);
-      myLobbyDiv.classList.add('hidden');
+      showScreen(lobbyScreen);
+      myLobby.classList.add('hidden');
       inLobby = false;
+      currentLobbyId = null;
+      lobbyList.innerHTML = 'Загрузка...';
       send({ type:'lobby_list' });
     }
 
     function createLobby() {
+      console.log('Запрос на создание лобби');
       send({ type:'create_lobby' });
     }
 
@@ -171,29 +218,45 @@
         inLobby = false;
         currentLobbyId = null;
       }
-      show(menuDiv);
+      showMainMenu();
     }
 
-    function renderLobbyList(list) {
+    function logout() {
+      console.log('Выход из аккаунта');
+      token = null;
+      localStorage.removeItem('token');
+      user = null;
+      if (ws) { ws.onclose = null; ws.close(); }
+      authForms.classList.remove('hidden');
+      userInfo.classList.add('hidden');
+      showScreen(menuScreen);
+    }
+
+    function renderLobbyList(lobbies) {
       lobbyList.innerHTML = '';
-      if (!list || list.length === 0) {
-        lobbyList.innerHTML = '<p>Нет лобби</p>';
+      if (!lobbies || lobbies.length === 0) {
+        lobbyList.innerHTML = '<p>Нет активных лобби</p>';
         return;
       }
-      list.forEach(l => {
+      lobbies.forEach(l => {
         const btn = document.createElement('button');
         btn.textContent = `${l.host} (${l.players}/10)`;
-        btn.onclick = () => { send({ type:'join_lobby', lobbyId: l.id }); inLobby = true; };
+        btn.onclick = () => {
+          console.log('Присоединяюсь к лобби', l.id);
+          send({ type:'join_lobby', lobbyId: l.id });
+          inLobby = true;
+          currentLobbyId = l.id;
+        };
         lobbyList.appendChild(btn);
       });
     }
 
     function renderPlayers(players) {
-      playersUl.innerHTML = '';
+      playerList.innerHTML = '';
       players.forEach(p => {
         const li = document.createElement('li');
         li.textContent = p.username;
-        playersUl.appendChild(li);
+        playerList.appendChild(li);
       });
     }
 
@@ -202,8 +265,13 @@
     }
 
     // Старт
-    if (token) connectWS();
-    else show(menuDiv);
+    if (token) {
+      console.log('Найден токен, подключаю WebSocket');
+      connectWS();
+    } else {
+      console.log('Токена нет, показываю форму входа');
+      showScreen(menuScreen);
+    }
   </script>
 </body>
 </html>
