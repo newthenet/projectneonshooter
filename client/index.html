@@ -4,8 +4,8 @@
   <meta charset="UTF-8">
   <title>Project Neon</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/simple-peer@9.11.1/simplepeer.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/DragControls.js"></script>
   <style>
     :root { --bg:#0d1117; --panel:#161b22; --text:#c9d1d9; --accent:#58a6ff; --red:#da3633; --green:#3fb950; }
     * { margin:0; padding:0; box-sizing:border-box; }
@@ -19,20 +19,12 @@
     button { cursor:pointer; background:var(--accent); color:#fff; font-weight:bold; }
     button.red { background:var(--red); }
     .flex { display:flex; gap:8px; } .flex>* { flex:1; }
-    #gameCanvas, #editorCanvas { position:absolute; top:0; left:0; width:100%; height:100%; }
-    #crosshair { position:absolute; top:50%; left:50%; width:20px; height:20px; transform:translate(-50%,-50%); pointer-events:none; display:none; }
-    #crosshair::before, #crosshair::after { content:''; position:absolute; background:rgba(0,255,0,0.8); }
-    #crosshair::before { width:2px; height:100%; left:50%; transform:translateX(-50%); }
-    #crosshair::after { height:2px; width:100%; top:50%; transform:translateY(-50%); }
-    #hud { position:absolute; bottom:20px; left:50%; transform:translateX(-50%); display:none; gap:20px; align-items:center; background:rgba(0,0,0,0.7); padding:8px 16px; border-radius:8px; z-index:5; }
-    .health-bar { width:200px; height:10px; background:#333; border-radius:5px; overflow:hidden; }
-    .health-fill { height:100%; width:100%; background:var(--green); transition:width 0.2s; }
-    #leaderboardList div { padding:4px; border-bottom:1px solid #30363d; }
-    #chatBox { position:fixed; bottom:80px; left:10px; width:300px; max-height:120px; overflow-y:auto; color:#fff; font-size:14px; background:rgba(0,0,0,0.6); padding:5px; border-radius:4px; z-index:10; }
-    #chatInput { position:fixed; bottom:50px; left:10px; width:300px; display:none; padding:8px; background:#222; color:#fff; border:1px solid #444; border-radius:4px; z-index:10; }
+    #editorCanvas { position:absolute; top:0; left:0; width:100%; height:100%; }
     .editor-panel { position:absolute; top:10px; left:10px; background:var(--panel); padding:10px; border-radius:8px; display:flex; flex-direction:column; gap:4px; z-index:10; }
-    #editorMsg { position:absolute; bottom:20px; left:50%; transform:translateX(-50%); background:rgba(0,0,0,0.7); color:#fff; padding:8px 16px; border-radius:6px; z-index:10; display:none; }
-    #clickOverlay { position:absolute; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.7); color:#fff; display:none; justify-content:center; align-items:center; z-index:20; cursor:pointer; font-size:24px; }
+    .color-picker { display:flex; gap:4px; align-items:center; }
+    .color-btn { width:24px; height:24px; border-radius:50%; cursor:pointer; border:2px solid transparent; }
+    .color-btn.selected { border-color:var(--accent); }
+    #scaleSlider { width:100%; }
   </style>
 </head>
 <body>
@@ -70,40 +62,33 @@
         <div id="inLobby" style="display:none;">
           <h4>Лобби <span id="lobbyIdDisplay"></span></h4>
           <ul id="playerList" style="list-style:none;padding:0;"></ul>
-          <div style="margin:8px 0;"><select id="mapSelect"><option value="">Стандартная</option></select></div>
-          <button id="startBtn" onclick="startGame()">Начать игру</button>
+          <button id="startBtn" onclick="startGame()">Начать игру (заглушка)</button>
         </div>
         <button onclick="leaveLobby()" class="red">Выход</button>
       </div>
-    </div>
-    <!-- ИГРА -->
-    <div id="gameScreen" class="screen">
-      <div id="gameCanvas"></div>
-      <div id="crosshair"></div>
-      <div id="clickOverlay">Кликните, чтобы начать игру</div>
-      <div id="hud">
-        <span id="ammoDisplay">10/10</span>
-        <div class="health-bar"><div id="healthFill" class="health-fill"></div></div>
-        <span id="healthValue">100</span>
-        <span id="roundInfo"></span>
-      </div>
-      <div id="chatBox"></div>
-      <input id="chatInput" placeholder="Чат (. для открытия)">
     </div>
     <!-- РЕДАКТОР КАРТ -->
     <div id="editorScreen" class="screen">
       <div id="editorCanvas"></div>
       <div class="editor-panel">
-        <button onclick="editorAddBox()">Ящик</button>
-        <button onclick="editorAddWall()">Стена</button>
-        <button onclick="editorAddSpawn('t')">Спавн Т</button>
-        <button onclick="editorAddSpawn('ct')">Спавн CT</button>
-        <button onclick="editorAddBombSite()">Плент</button>
+        <button onclick="addObject('box')">Добавить ящик</button>
+        <button onclick="addObject('wall')">Добавить стену</button>
+        <button onclick="addSpawn('t')">Спавн Т</button>
+        <button onclick="addSpawn('ct')">Спавн CT</button>
+        <button onclick="addBombSite()">Плент</button>
+        <div class="color-picker">
+          <div class="color-btn" style="background:#8B7355;" onclick="setColor('#8B7355', this)"></div>
+          <div class="color-btn" style="background:#888888;" onclick="setColor('#888888', this)"></div>
+          <div class="color-btn" style="background:#ff4444;" onclick="setColor('#ff4444', this)"></div>
+          <div class="color-btn" style="background:#4444ff;" onclick="setColor('#4444ff', this)"></div>
+          <div class="color-btn" style="background:#44ff44;" onclick="setColor('#44ff44', this)"></div>
+        </div>
+        <input type="range" id="scaleSlider" min="0.5" max="3" step="0.1" value="1" oninput="scaleSelected(this.value)">
+        <button onclick="deleteSelected()">Удалить выбранное</button>
         <button onclick="editorSaveMap()">Сохранить</button>
         <button onclick="editorLoadMap()">Загрузить</button>
         <button onclick="closeEditor()" class="red">Выход</button>
       </div>
-      <div id="editorMsg">Объект выбран. Стрелки для перемещения.</div>
     </div>
   </div>
 
@@ -112,30 +97,18 @@
     const WS_URL = location.origin.replace(/^http/, 'ws');
     let token = localStorage.getItem('token');
     let user = null, ws = null, lobbyId = null, inLobby = false;
-    let peer = null, dataChannel = null;
-    let amHost = false;
-    let gameState = null;
 
-    const game = {
-      scene:null, camera:null, renderer:null,
-      keys:{}, mouseLocked:false,
-      lastShot:0, shootCooldown:0.3,
-      myId:null, myTeam:null,
-      ammo:10, maxAmmo:10, reloading:false,
-      health:100
-    };
-
+    // Редактор
     const editor = {
-      scene:null, camera:null, renderer:null, controls:null,
+      scene:null, camera:null, renderer:null, controls:null, dragControls:null,
       objects:[], spawns:[], bombSite:null,
-      selectedObject:null
+      selectedObject:null, currentColor:'#8B7355'
     };
 
     // UI
     const screens = {
       menu: document.getElementById('menuScreen'),
       lobby: document.getElementById('lobbyScreen'),
-      game: document.getElementById('gameScreen'),
       editor: document.getElementById('editorScreen')
     };
     const authBlock = document.getElementById('authBlock');
@@ -147,27 +120,12 @@
     const lobbyIdDisplay = document.getElementById('lobbyIdDisplay');
     const playerList = document.getElementById('playerList');
     const startBtn = document.getElementById('startBtn');
-    const mapSelect = document.getElementById('mapSelect');
-    const hudEl = document.getElementById('hud');
-    const crosshairEl = document.getElementById('crosshair');
-    const ammoDisplay = document.getElementById('ammoDisplay');
-    const healthFill = document.getElementById('healthFill');
-    const healthValue = document.getElementById('healthValue');
-    const roundInfo = document.getElementById('roundInfo');
-    const chatBox = document.getElementById('chatBox');
-    const chatInput = document.getElementById('chatInput');
-    const clickOverlay = document.getElementById('clickOverlay');
 
     function showScreen(name) {
       Object.values(screens).forEach(s => s.classList.remove('active'));
       screens[name].classList.add('active');
-      if (name === 'game') {
-        if (game.renderer) document.getElementById('gameCanvas').appendChild(game.renderer.domElement);
-        hudEl.style.display = 'flex';
-        crosshairEl.style.display = 'block';
-      } else {
-        hudEl.style.display = 'none';
-        crosshairEl.style.display = 'none';
+      if (name === 'editor' && editor.renderer) {
+        document.getElementById('editorCanvas').appendChild(editor.renderer.domElement);
       }
     }
 
@@ -186,12 +144,9 @@
           case 'lobby_update':
             updateLobbyPlayers(msg.players);
             inLobbyDiv.style.display = 'block';
-            startBtn.style.display = (msg.players[0]?.id === user.id) ? 'block' : 'none';
-            if (user.is_neon && msg.players[0]?.id === user.id) loadMapListToSelect();
             break;
-          case 'game_starting': alert(`Игра начнётся через ${msg.delay} сек`); break;
-          case 'game_started': startP2PGame(msg.players, msg.mapData); break;
-          case 'signal': handleSignal(msg.from, msg.data); break;
+          case 'game_starting': alert('Игра начинается...'); break;
+          case 'game_started': alert('Игра началась! (заглушка)'); break;
           case 'error': alert(msg.text); break;
         }
       };
@@ -199,7 +154,7 @@
     }
     function sendWS(obj) { if (ws?.readyState===1) ws.send(JSON.stringify(obj)); }
 
-    // ==================== АВТОРИЗАЦИЯ И МЕНЮ ====================
+    // ==================== АВТОРИЗАЦИЯ ====================
     function login() {
       const u = document.getElementById('loginUsername').value.trim();
       const p = document.getElementById('loginPassword').value;
@@ -237,23 +192,7 @@
       playerList.innerHTML = '';
       players.forEach(p => { const li=document.createElement('li'); li.textContent=p.username; playerList.appendChild(li); });
     }
-    async function loadMapListToSelect() {
-      try {
-        const resp = await fetch('/api/maps', { headers:{'Authorization':'Bearer '+token} });
-        const maps = await resp.json();
-        mapSelect.innerHTML = '<option value="">Стандартная</option>';
-        maps.forEach(m => { const o=document.createElement('option'); o.value=m._id; o.textContent=m.name; mapSelect.appendChild(o); });
-      } catch(e) {}
-    }
-    async function startGame() {
-      const mapId = mapSelect.value;
-      if (mapId) {
-        const resp = await fetch('/api/maps/'+mapId, { headers:{'Authorization':'Bearer '+token} });
-        const map = await resp.json();
-        sendWS({ type:'set_map', mapData: map.data });
-      }
-      sendWS({ type:'start_game' });
-    }
+    function startGame() { sendWS({ type:'start_game' }); }
     function leaveLobby() { if (inLobby) { sendWS({ type:'leave_lobby' }); inLobby=false; } showMenu(); }
     function renderLobbyList(lobbies) {
       lobbyListDiv.innerHTML = '';
@@ -277,537 +216,257 @@
       });
     }
 
-    // ==================== P2P ИГРА (ХОСТ-КЛИЕНТ) ====================
-    function startP2PGame(players, mapData) {
-      amHost = (players[0].id === user.id);
-      game.myId = user.id;
-      game.myTeam = players.find(p => p.id === user.id).team;
-      game.health = 100; game.ammo = game.maxAmmo; game.reloading = false;
-
-      if (!game.renderer) initGameRenderer();
-      loadMap(mapData || defaultMapData());
-      showScreen('game');
-
-      if (peer) {
-        try { peer.destroy(); } catch(e) {}
-        peer = null;
-        dataChannel = null;
-      }
-
-      const otherPlayer = players.find(p => p.id !== user.id);
-      if (!otherPlayer) return;
-
-      createPeer(otherPlayer.id, amHost);
-
-      clickOverlay.style.display = 'flex';
-      clickOverlay.onclick = () => {
-        clickOverlay.style.display = 'none';
-        document.body.requestPointerLock();
-        document.body.focus();
-      };
-
-      if (amHost) {
-        initHostState(players, mapData);
-      }
-    }
-
-    function initHostState(players, mapData) {
-      gameState = {
-        players: {},
-        round: 1,
-        maxRounds: 5,
-        roundActive: false,
-        freezeUntil: Date.now() + 5000,
-      };
-      players.forEach(p => {
-        gameState.players[p.id] = {
-          id: p.id,
-          username: p.username,
-          team: p.team,
-          health: 100,
-          position: {x:0,y:1,z: p.team==='t'?5:-5},
-          rotation: {x:0,y:0,z:0}
-        };
-      });
-      if (dataChannel && dataChannel.connected) {
-        sendToPeer({ type:'game_state', state: gameState });
-      }
-    }
-
-    const peerConfig = {
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:openrelay.metered.ca:80' },
-        { urls: 'turn:openrelay.metered.ca:80?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
-        { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
-      ]
-    };
-
-    function createPeer(remoteId, initiator) {
-      if (peer && !peer.destroyed) return;
-      peer = new SimplePeer({ initiator, config: peerConfig });
-      peer.on('signal', data => {
-        if (!peer.destroyed) sendWS({ type:'signal', target: remoteId, data });
-      });
-      peer.on('connect', () => {
-        console.log('P2P connected');
-        dataChannel = peer;
-        if (amHost && gameState) {
-          sendToPeer({ type:'game_state', state: gameState });
-        }
-      });
-      peer.on('data', data => {
-        try {
-          const msg = JSON.parse(data.toString());
-          if (amHost) handleHostMessage(msg);
-          else handleClientMessage(msg);
-        } catch(e) {}
-      });
-      peer.on('error', err => console.error('Peer error:', err));
-      peer.on('close', () => {
-        dataChannel = null;
-        peer = null;
-      });
-    }
-
-    function handleSignal(from, data) {
-      if (!peer) return;
-      if (!peer.destroyed && !peer.connected) {
-        try { peer.signal(data); } catch(e) { console.warn('Signal error:', e); }
-      }
-    }
-
-    function sendToPeer(obj) {
-      if (dataChannel && dataChannel.connected) {
-        dataChannel.send(JSON.stringify(obj));
-      }
-    }
-
-    function handleHostMessage(msg) {
-      if (msg.type === 'input') {
-        if (gameState && gameState.players[msg.id]) {
-          const p = gameState.players[msg.id];
-          p.position = msg.pos;
-          p.rotation = msg.rot;
-          if (msg.shoot && gameState.roundActive && gameState.freezeUntil < Date.now()) {
-            hostProcessShoot(msg.id, msg.shootOrigin, msg.shootDir);
-          }
-        }
-      } else if (msg.type === 'chat') {
-        addChatMessage(msg.from, msg.text);
-        sendToPeer({ type:'chat', from: msg.from, text: msg.text });
-      }
-    }
-
-    function handleClientMessage(msg) {
-      if (msg.type === 'game_state') {
-        gameState = msg.state;
-        updateLocalPlayerFromState();
-      } else if (msg.type === 'chat') {
-        addChatMessage(msg.from, msg.text);
-      }
-    }
-
-    function updateLocalPlayerFromState() {
-      if (!gameState || !gameState.players[game.myId]) return;
-      const my = gameState.players[game.myId];
-      game.health = my.health;
-      game.ammo = my.ammo !== undefined ? my.ammo : game.ammo;
-      game.camera.position.set(my.position.x, my.position.y, my.position.z);
-      game.camera.rotation.set(my.rotation.x, my.rotation.y, my.rotation.z);
-      updateHUD();
-    }
-
-    function hostProcessShoot(shooterId, originArr, dirArr) {
-      const origin = new THREE.Vector3().fromArray(originArr);
-      const dir = new THREE.Vector3().fromArray(dirArr);
-      const raycaster = new THREE.Raycaster(origin, dir);
-      const intersects = raycaster.intersectObjects(game.scene.children, true);
-      for (const inter of intersects) {
-        const obj = inter.object;
-        if (obj.userData.playerId && obj.userData.hitbox) {
-          if (obj.userData.playerId === shooterId) continue;
-          if (gameState.players[obj.userData.playerId]?.team === gameState.players[shooterId]?.team) continue;
-          const dmg = obj.userData.hitbox==='head'?100:20;
-          gameState.players[obj.userData.playerId].health -= dmg;
-          if (gameState.players[obj.userData.playerId].health <= 0) {
-            gameState.players[obj.userData.playerId].health = 0;
-            checkRoundEndHost();
-          }
-          sendToPeer({ type:'game_state', state: gameState });
-          break;
-        }
-      }
-    }
-
-    function checkRoundEndHost() {
-      const alive = {t:false, ct:false};
-      Object.values(gameState.players).forEach(p => { if (p.health > 0) alive[p.team] = true; });
-      if (!alive.t || !alive.ct) {
-        const winner = !alive.t ? 'ct' : 't';
-        endRoundHost(winner);
-      }
-    }
-
-    function endRoundHost(winnerTeam) {
-      gameState.roundActive = false;
-      gameState.round++;
-      if (gameState.round > gameState.maxRounds) {
-        gameOverHost(winnerTeam);
-        return;
-      }
-      if (gameState.round === 4) {
-        Object.values(gameState.players).forEach(p => p.team = p.team==='t'?'ct':'t');
-      }
-      Object.values(gameState.players).forEach(p => {
-        p.health = 100;
-        p.position = {x:0, y:1, z: p.team==='t'?5:-5};
-      });
-      gameState.freezeUntil = Date.now() + 5000;
-      gameState.roundActive = true;
-      sendToPeer({ type:'game_state', state: gameState });
-    }
-
-    function gameOverHost(winnerTeam) {
-      gameState.roundActive = false;
-      alert(`Победила команда ${winnerTeam}`);
-      leaveGame();
-    }
-
-    let lastHostUpdate = 0;
-    function hostGameLoop() {
-      if (!amHost || !gameState || !gameState.roundActive) return;
-      const now = performance.now();
-      if (now - lastHostUpdate > 50) {
-        if (game.mouseLocked && Date.now() > gameState.freezeUntil) {
-          handleMovement();
-          gameState.players[game.myId].position = {
-            x: game.camera.position.x,
-            y: game.camera.position.y,
-            z: game.camera.position.z
-          };
-          gameState.players[game.myId].rotation = {
-            x: game.camera.rotation.x,
-            y: game.camera.rotation.y,
-            z: game.camera.rotation.z
-          };
-        }
-        sendToPeer({ type:'game_state', state: gameState });
-        lastHostUpdate = now;
-      }
-      updateHUD();
-    }
-
-    let lastInputSend = 0;
-    function sendInputToHost() {
-      if (amHost) return;
-      if (!dataChannel || !dataChannel.connected) return;
-      const now = performance.now();
-      if (now - lastInputSend > 30) {
-        const msg = {
-          type:'input',
-          id: game.myId,
-          pos: {x: game.camera.position.x, y: game.camera.position.y, z: game.camera.position.z},
-          rot: {x: game.camera.rotation.x, y: game.camera.rotation.y, z: game.camera.rotation.z}
-        };
-        sendToPeer(msg);
-        lastInputSend = now;
-      }
-    }
-
-    function shoot() {
-      if (!gameState || !gameState.roundActive || gameState.freezeUntil > Date.now()) return;
-      if (game.ammo <= 0 || game.reloading) return;
-      const now = performance.now()/1000;
-      if (now - game.lastShot < game.shootCooldown) return;
-      game.lastShot = now;
-      game.ammo--;
-      updateHUD();
-      const dir = new THREE.Vector3(0,0,-1).applyQuaternion(game.camera.quaternion);
-      dir.x += (Math.random()-0.5)*0.02; dir.y += (Math.random()-0.5)*0.02; dir.z += (Math.random()-0.5)*0.02;
-      dir.normalize();
-      if (amHost) {
-        hostProcessShoot(game.myId, game.camera.position.toArray(), dir.toArray());
-      } else {
-        sendToPeer({
-          type:'input',
-          id: game.myId,
-          pos: {x:game.camera.position.x, y:game.camera.position.y, z:game.camera.position.z},
-          rot: {x:game.camera.rotation.x, y:game.camera.rotation.y, z:game.camera.rotation.z},
-          shoot: true,
-          shootOrigin: game.camera.position.toArray(),
-          shootDir: dir.toArray()
-        });
-      }
-      if (game.ammo === 0) reload();
-    }
-
-    function reload() {
-      if (game.reloading || game.ammo === game.maxAmmo) return;
-      game.reloading = true;
-      setTimeout(() => { game.ammo = game.maxAmmo; game.reloading = false; updateHUD(); }, 3000);
-    }
-
-    function updateHUD() {
-      if (!gameState || !gameState.players[game.myId]) return;
-      const my = gameState.players[game.myId];
-      ammoDisplay.textContent = `${game.ammo}/${game.maxAmmo}${game.reloading?' (перезарядка)':''}`;
-      healthFill.style.width = `${my.health}%`;
-      healthValue.textContent = my.health;
-      roundInfo.textContent = `Раунд ${gameState.round}/${gameState.maxRounds} | ${game.myTeam?.toUpperCase()}`;
-    }
-
-    function initGameRenderer() {
-      game.scene = new THREE.Scene(); game.scene.background = new THREE.Color(0x87ceeb);
-      game.camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
-      game.renderer = new THREE.WebGLRenderer({ antialias:true });
-      game.renderer.setSize(window.innerWidth, window.innerHeight);
-      document.getElementById('gameCanvas').appendChild(game.renderer.domElement);
-      game.scene.add(new THREE.AmbientLight(0x404040));
-      const light = new THREE.DirectionalLight(0xffffff,0.8); light.position.set(10,20,5); game.scene.add(light);
-      window.addEventListener('resize', () => {
-        if (!game.camera) return;
-        game.camera.aspect = window.innerWidth/window.innerHeight;
-        game.camera.updateProjectionMatrix();
-        game.renderer.setSize(window.innerWidth, window.innerHeight);
-      });
-    }
-
-    function defaultMapData() {
-      return {
-        spawns: [{team:'t',x:0,y:1,z:5},{team:'ct',x:0,y:1,z:-5}],
-        objects: [{type:'box',x:3,y:1,z:3,w:2,h:2,d:2},{type:'wall',x:-5,y:2,z:0,w:1,h:4,d:10}]
-      };
-    }
-
-    function loadMap(data) {
-      while(game.scene.children.length > 2) game.scene.remove(game.scene.children[2]);
-      data.objects?.forEach(obj => {
-        let mesh;
-        if (obj.type==='box') mesh = new THREE.Mesh(new THREE.BoxGeometry(obj.w,obj.h,obj.d), new THREE.MeshLambertMaterial({color:0x8B7355}));
-        else if (obj.type==='wall') mesh = new THREE.Mesh(new THREE.BoxGeometry(obj.w,obj.h,obj.d), new THREE.MeshLambertMaterial({color:0x888888}));
-        if (mesh) { mesh.position.set(obj.x,obj.y,obj.z); game.scene.add(mesh); }
-      });
-      const ground = new THREE.Mesh(new THREE.PlaneGeometry(50,50), new THREE.MeshLambertMaterial({color:0x228b22}));
-      ground.rotation.x = -Math.PI/2; game.scene.add(ground);
-    }
-
-    function updateRemoteModels() {
-      if (!gameState) return;
-      Object.keys(game.players).forEach(id => {
-        if (game.players[id] && game.players[id].mesh) {
-          game.scene.remove(game.players[id].mesh);
-          delete game.players[id].mesh;
-        }
-      });
-      Object.values(gameState.players).forEach(p => {
-        if (p.id === game.myId) return;
-        const group = new THREE.Group();
-        const bodyColor = p.team==='t'?0xff4444:0x4444ff;
-        const body = new THREE.Mesh(new THREE.CylinderGeometry(0.4,0.5,1.8,8), new THREE.MeshLambertMaterial({color:bodyColor}));
-        body.position.y = 0.9;
-        body.userData = { playerId:p.id, hitbox:'body' };
-        const head = new THREE.Mesh(new THREE.SphereGeometry(0.35,16,16), new THREE.MeshLambertMaterial({color:0xffccaa}));
-        head.position.y = 2.05;
-        head.userData = { playerId:p.id, hitbox:'head' };
-        group.add(body); group.add(head);
-        group.position.set(p.position.x, p.position.y, p.position.z);
-        group.rotation.set(p.rotation.x, p.rotation.y, p.rotation.z);
-        game.scene.add(group);
-        if (!game.players) game.players = {};
-        game.players[p.id] = { ...game.players[p.id], mesh: group };
-      });
-    }
-
-    function gameLoop() {
-      requestAnimationFrame(gameLoop);
-      if (!game.renderer || !game.scene) return;
-      if (gameState) {
-        updateRemoteModels();
-        if (amHost) hostGameLoop();
-        else sendInputToHost();
-      }
-      game.renderer.render(game.scene, game.camera);
-    }
-
-    function handleMovement() {
-      if (!game.mouseLocked) return;
-      const speed = 5 * 0.1;
-      const dir = new THREE.Vector3();
-      if (game.keys['KeyW']) dir.z -= 1;
-      if (game.keys['KeyS']) dir.z += 1;
-      if (game.keys['KeyA']) dir.x -= 1;
-      if (game.keys['KeyD']) dir.x += 1;
-      if ((game.keys['Space'] || game.keys['KeyQ']) && game.camera.position.y <= 1) {
-        game.camera.position.y = 2.5;
-      }
-      dir.normalize().multiplyScalar(speed);
-      game.camera.position.add(dir);
-      if (game.camera.position.y > 1) game.camera.position.y -= 0.2;
-      else game.camera.position.y = 1;
-    }
-
-    document.addEventListener('keydown', e => {
-      game.keys[e.code] = true;
-      if (e.code === 'KeyR') reload();
-      if (e.code === 'Period' && screens.game.classList.contains('active')) {
-        chatInput.style.display = chatInput.style.display==='none'?'block':'none';
-        if (chatInput.style.display==='block') chatInput.focus();
-      }
-      if (e.code === 'KeyL' && screens.game.classList.contains('active')) { if (confirm('Сдаться?')) leaveGame(); }
-    });
-    document.addEventListener('keyup', e => game.keys[e.code] = false);
-    document.addEventListener('mousemove', e => {
-      if (game.mouseLocked) {
-        game.camera.rotation.y -= e.movementX * 0.002;
-        game.camera.rotation.x -= e.movementY * 0.002;
-        game.camera.rotation.x = Math.max(-Math.PI/2.5, Math.min(Math.PI/2.5, game.camera.rotation.x));
-      }
-    });
-    document.addEventListener('pointerlockchange', () => { game.mouseLocked = document.pointerLockElement !== null; });
-    document.addEventListener('mousedown', e => { if (e.button===0 && game.mouseLocked && gameState?.roundActive) shoot(); });
-    chatInput.addEventListener('keydown', e => {
-      if (e.key === 'Enter') {
-        const msg = { type:'chat', text: chatInput.value, from: user.username };
-        if (amHost) {
-          addChatMessage(msg.from, msg.text);
-          sendToPeer(msg);
-        } else {
-          sendToPeer(msg);
-          addChatMessage(msg.from, msg.text);
-        }
-        chatInput.value = ''; chatInput.style.display = 'none';
-      }
-    });
-
-    function leaveGame() {
-      document.exitPointerLock();
-      if (game.renderer) { game.renderer.dispose(); document.getElementById('gameCanvas').innerHTML=''; }
-      game.scene=null; game.camera=null; game.renderer=null;
-      if (peer) { try { peer.destroy(); } catch(e) {} peer=null; dataChannel=null; }
-      gameState = null;
-      showMenu();
-    }
-
-    // ==================== РЕДАКТОР КАРТ (прежний) ====================
+    // ==================== РЕДАКТОР КАРТ ====================
     function initEditor() {
-      editor.scene = new THREE.Scene(); editor.scene.background = new THREE.Color(0x87ceeb);
+      editor.scene = new THREE.Scene();
+      editor.scene.background = new THREE.Color(0x222222);
       editor.camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
       editor.renderer = new THREE.WebGLRenderer({ antialias:true });
       editor.renderer.setSize(window.innerWidth, window.innerHeight);
       document.getElementById('editorCanvas').appendChild(editor.renderer.domElement);
+
+      // OrbitControls
       editor.controls = new THREE.OrbitControls(editor.camera, editor.renderer.domElement);
-      editor.controls.enableDamping = true; editor.controls.target.set(0,1,0);
-      editor.camera.position.set(10,10,10); editor.controls.update();
-      editor.objects = []; editor.spawns = []; editor.bombSite = null;
-      editor.renderer.domElement.addEventListener('click', onEditorClick);
-      function animate() { requestAnimationFrame(animate); if (editor.renderer) { editor.controls.update(); editor.renderer.render(editor.scene, editor.camera); } }
+      editor.controls.enableDamping = true;
+      editor.controls.target.set(0,1,0);
+      editor.camera.position.set(10,10,10);
+      editor.controls.update();
+
+      // DragControls
+      editor.dragControls = new THREE.DragControls([], editor.camera, editor.renderer.domElement);
+      editor.dragControls.addEventListener('dragstart', function(event) {
+        editor.controls.enabled = false;
+        selectObject(event.object);
+      });
+      editor.dragControls.addEventListener('drag', function(event) {
+        updateEditorData(event.object);
+      });
+      editor.dragControls.addEventListener('dragend', function(event) {
+        editor.controls.enabled = true;
+      });
+
+      // Освещение
+      editor.scene.add(new THREE.AmbientLight(0x404040));
+      const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+      dirLight.position.set(10,20,5);
+      editor.scene.add(dirLight);
+
+      // Пол для ориентира
+      const gridHelper = new THREE.GridHelper(20, 20, 0x888888, 0x444444);
+      editor.scene.add(gridHelper);
+
+      window.addEventListener('resize', () => {
+        editor.camera.aspect = window.innerWidth/window.innerHeight;
+        editor.camera.updateProjectionMatrix();
+        editor.renderer.setSize(window.innerWidth, window.innerHeight);
+      });
+
       animate();
     }
-    function onEditorClick(event) {
-      const rect = editor.renderer.domElement.getBoundingClientRect();
-      const mouse = new THREE.Vector2(((event.clientX - rect.left) / rect.width) * 2 - 1, -((event.clientY - rect.top) / rect.height) * 2 + 1);
-      const raycaster = new THREE.Raycaster(); raycaster.setFromCamera(mouse, editor.camera);
-      const intersects = raycaster.intersectObjects(editor.scene.children, true);
-      if (intersects.length > 0) {
-        let obj = intersects[0].object;
-        while (obj && !obj.userData.editorType) obj = obj.parent;
-        if (obj && obj.userData.editorType) selectObject(obj); else deselectObject();
-      } else deselectObject();
-    }
-    function selectObject(obj) {
-      if (editor.selectedObject === obj) return; deselectObject();
-      editor.selectedObject = obj; obj.userData.originalColor = obj.material.color.getHex(); obj.material.color.set(0x00ff00);
-      document.getElementById('editorMsg').style.display = 'block';
-    }
-    function deselectObject() {
-      if (editor.selectedObject) { editor.selectedObject.material.color.set(editor.selectedObject.userData.originalColor); editor.selectedObject = null; document.getElementById('editorMsg').style.display = 'none'; }
-    }
-    document.addEventListener('keydown', (e) => {
-      if (!screens.editor.classList.contains('active') || !editor.selectedObject) return;
-      if (e.code.startsWith('Arrow')) {
-        e.preventDefault();
-        const move = 0.5;
-        if (e.code === 'ArrowUp') editor.selectedObject.position.z -= move;
-        if (e.code === 'ArrowDown') editor.selectedObject.position.z += move;
-        if (e.code === 'ArrowLeft') editor.selectedObject.position.x -= move;
-        if (e.code === 'ArrowRight') editor.selectedObject.position.x += move;
-        updateEditorData(editor.selectedObject);
+
+    function animate() {
+      requestAnimationFrame(animate);
+      if (editor.renderer) {
+        editor.controls.update();
+        editor.renderer.render(editor.scene, editor.camera);
       }
-    });
+    }
+
+    function selectObject(obj) {
+      if (editor.selectedObject === obj) return;
+      deselectObject();
+      editor.selectedObject = obj;
+      if (obj.userData.editorType === 'box' || obj.userData.editorType === 'wall') {
+        obj.material.emissive = new THREE.Color(0x333333);
+      }
+    }
+
+    function deselectObject() {
+      if (editor.selectedObject) {
+        if (editor.selectedObject.userData.editorType === 'box' || editor.selectedObject.userData.editorType === 'wall') {
+          editor.selectedObject.material.emissive = new THREE.Color(0x000000);
+        }
+        editor.selectedObject = null;
+      }
+    }
+
+    function addObject(type) {
+      let mesh;
+      if (type === 'box') {
+        mesh = new THREE.Mesh(
+          new THREE.BoxGeometry(2,2,2),
+          new THREE.MeshStandardMaterial({ color: editor.currentColor })
+        );
+      } else if (type === 'wall') {
+        mesh = new THREE.Mesh(
+          new THREE.BoxGeometry(1,4,10),
+          new THREE.MeshStandardMaterial({ color: '#888888' })
+        );
+      }
+      mesh.position.set(0, 1, 0);
+      mesh.userData = { editorType: type, editorIndex: editor.objects.length };
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      editor.scene.add(mesh);
+      editor.objects.push({ type, mesh, data: getObjectData(mesh, type) });
+      editor.dragControls.objects.push(mesh);
+    }
+
+    function getObjectData(mesh, type) {
+      if (type === 'box') {
+        return { type:'box', x:mesh.position.x, y:mesh.position.y, z:mesh.position.z,
+                 w:mesh.geometry.parameters.width, h:mesh.geometry.parameters.height, d:mesh.geometry.parameters.depth,
+                 color: '#' + mesh.material.color.getHexString() };
+      } else if (type === 'wall') {
+        return { type:'wall', x:mesh.position.x, y:mesh.position.y, z:mesh.position.z,
+                 w:mesh.geometry.parameters.width, h:mesh.geometry.parameters.height, d:mesh.geometry.parameters.depth,
+                 color: '#' + mesh.material.color.getHexString() };
+      }
+    }
+
     function updateEditorData(obj) {
       const idx = obj.userData.editorIndex;
       if (obj.userData.editorType === 'box' || obj.userData.editorType === 'wall') {
-        editor.objects[idx].data = { ...editor.objects[idx].data, x: obj.position.x, y: obj.position.y, z: obj.position.z };
-      } else if (obj.userData.editorType === 'spawn') {
-        editor.spawns[idx].data = { ...editor.spawns[idx].data, x: obj.position.x, y: obj.position.y, z: obj.position.z };
-      } else if (obj.userData.editorType === 'bomb') {
-        editor.bombSite.data = { ...editor.bombSite.data, x: obj.position.x, y: obj.position.y, z: obj.position.z };
+        editor.objects[idx].data = getObjectData(obj, obj.userData.editorType);
       }
     }
-    function editorAddBox() {
-      const mesh = new THREE.Mesh(new THREE.BoxGeometry(2,2,2), new THREE.MeshLambertMaterial({color:0x8B7355}));
-      mesh.position.set(0,1,0); mesh.userData = { editorType:'box', editorIndex: editor.objects.length };
-      editor.scene.add(mesh); editor.objects.push({ type:'box', mesh, data:{ x:0,y:1,z:0,w:2,h:2,d:2 } });
-    }
-    function editorAddWall() {
-      const mesh = new THREE.Mesh(new THREE.BoxGeometry(1,4,10), new THREE.MeshLambertMaterial({color:0x888888}));
-      mesh.position.set(0,2,0); mesh.userData = { editorType:'wall', editorIndex: editor.objects.length };
-      editor.scene.add(mesh); editor.objects.push({ type:'wall', mesh, data:{ x:0,y:2,z:0,w:1,h:4,d:10 } });
-    }
-    function editorAddSpawn(team) {
+
+    function addSpawn(team) {
       const color = team === 't' ? 0xff0000 : 0x0000ff;
-      const marker = new THREE.Mesh(new THREE.SphereGeometry(0.5), new THREE.MeshBasicMaterial({color}));
-      marker.position.set(0,1,0); marker.userData = { editorType:'spawn', editorIndex: editor.spawns.length, team };
-      editor.scene.add(marker); editor.spawns.push({ team, mesh:marker, data:{ team, x:0,y:1,z:0 } });
+      const marker = new THREE.Mesh(
+        new THREE.SphereGeometry(0.5, 16, 16),
+        new THREE.MeshStandardMaterial({ color })
+      );
+      marker.position.set(0, 1, 0);
+      marker.userData = { editorType: 'spawn', team };
+      editor.scene.add(marker);
+      editor.spawns.push({ team, mesh: marker, data: { team, x:0, y:1, z:0 } });
+      editor.dragControls.objects.push(marker);
     }
-    function editorAddBombSite() {
-      if (editor.bombSite) editor.scene.remove(editor.bombSite.mesh);
-      const marker = new THREE.Mesh(new THREE.BoxGeometry(1,0.2,1), new THREE.MeshBasicMaterial({color:0xffff00}));
-      marker.position.set(0,0,0); marker.userData = { editorType:'bomb', editorIndex:0 };
-      editor.scene.add(marker); editor.bombSite = { mesh:marker, data:{ x:0,y:0,z:0 } };
+
+    function addBombSite() {
+      if (editor.bombSite) {
+        editor.scene.remove(editor.bombSite.mesh);
+        const idx = editor.dragControls.objects.indexOf(editor.bombSite.mesh);
+        if (idx > -1) editor.dragControls.objects.splice(idx, 1);
+      }
+      const marker = new THREE.Mesh(
+        new THREE.BoxGeometry(1, 0.2, 1),
+        new THREE.MeshStandardMaterial({ color: 0xffff00 })
+      );
+      marker.position.set(0, 0, 0);
+      marker.userData = { editorType: 'bomb' };
+      editor.scene.add(marker);
+      editor.bombSite = { mesh: marker, data: { x:0, y:0, z:0 } };
+      editor.dragControls.objects.push(marker);
     }
+
+    function setColor(color, el) {
+      editor.currentColor = color;
+      document.querySelectorAll('.color-btn').forEach(b => b.classList.remove('selected'));
+      el.classList.add('selected');
+      if (editor.selectedObject && (editor.selectedObject.userData.editorType === 'box' || editor.selectedObject.userData.editorType === 'wall')) {
+        editor.selectedObject.material.color.set(color);
+        updateEditorData(editor.selectedObject);
+      }
+    }
+
+    function scaleSelected(value) {
+      if (!editor.selectedObject) return;
+      const obj = editor.selectedObject;
+      if (obj.userData.editorType === 'box' || obj.userData.editorType === 'wall') {
+        const geo = obj.geometry;
+        if (geo && geo.parameters) {
+          const params = geo.parameters;
+          const scale = parseFloat(value);
+          obj.scale.set(scale, scale, scale);
+          updateEditorData(obj);
+        }
+      }
+    }
+
+    function deleteSelected() {
+      if (!editor.selectedObject) return;
+      const obj = editor.selectedObject;
+      const idx = editor.dragControls.objects.indexOf(obj);
+      if (idx > -1) editor.dragControls.objects.splice(idx, 1);
+      editor.scene.remove(obj);
+      if (obj.userData.editorType === 'box' || obj.userData.editorType === 'wall') {
+        editor.objects.splice(obj.userData.editorIndex, 1);
+        // обновить индексы
+        editor.objects.forEach((o, i) => { o.mesh.userData.editorIndex = i; });
+      }
+      deselectObject();
+    }
+
     function editorSaveMap() {
       const name = prompt('Название карты:');
       if (!name) return;
-      const data = { spawns: editor.spawns.map(s => s.data), bombSite: editor.bombSite?.data || {x:0,y:0,z:0}, objects: editor.objects.map(o => o.data) };
-      fetch('/api/maps', { method:'POST', headers:{'Content-Type':'application/json','Authorization':'Bearer '+token}, body: JSON.stringify({name, data}) })
-        .then(r=>r.json()).then(() => alert('Сохранено!'));
+      const data = {
+        spawns: editor.spawns.map(s => ({ team: s.team, x: s.mesh.position.x, y: s.mesh.position.y, z: s.mesh.position.z })),
+        bombSite: editor.bombSite ? { x: editor.bombSite.mesh.position.x, y: editor.bombSite.mesh.position.y, z: editor.bombSite.mesh.position.z } : null,
+        objects: editor.objects.map(o => getObjectData(o.mesh, o.type))
+      };
+      fetch('/api/maps', {
+        method:'POST',
+        headers:{ 'Content-Type':'application/json', 'Authorization':'Bearer '+token },
+        body: JSON.stringify({ name, data })
+      }).then(r=>r.json()).then(() => alert('Сохранено!'));
     }
+
     function editorLoadMap() {
       fetch('/api/maps', { headers:{'Authorization':'Bearer '+token} }).then(r=>r.json()).then(maps => {
         const id = prompt('ID карты:\n' + maps.map(m => `${m._id}: ${m.name}`).join('\n'));
         if (!id) return;
         fetch('/api/maps/'+id, { headers:{'Authorization':'Bearer '+token} }).then(r=>r.json()).then(m => {
-          while(editor.scene.children.length) editor.scene.remove(editor.scene.children[0]);
+          // очистить сцену
+          while(editor.scene.children.length > 3) editor.scene.remove(editor.scene.children[3]);
           editor.objects = []; editor.spawns = []; editor.bombSite = null;
-          m.data.objects?.forEach(obj => {
-            let mesh;
-            if (obj.type === 'box') mesh = new THREE.Mesh(new THREE.BoxGeometry(obj.w,obj.h,obj.d), new THREE.MeshLambertMaterial({color:0x8B7355}));
-            else if (obj.type === 'wall') mesh = new THREE.Mesh(new THREE.BoxGeometry(obj.w,obj.h,obj.d), new THREE.MeshLambertMaterial({color:0x888888}));
-            if (mesh) { mesh.position.set(obj.x,obj.y,obj.z); mesh.userData = { editorType:obj.type, editorIndex: editor.objects.length }; editor.scene.add(mesh); editor.objects.push({ type:obj.type, mesh, data:obj }); }
+          editor.dragControls.objects = [];
+
+          m.data.objects?.forEach(o => {
+            const geometry = o.type === 'box' ? new THREE.BoxGeometry(o.w, o.h, o.d) : new THREE.BoxGeometry(o.w, o.h, o.d);
+            const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: o.color || '#8B7355' }));
+            mesh.position.set(o.x, o.y, o.z);
+            mesh.userData = { editorType: o.type, editorIndex: editor.objects.length };
+            editor.scene.add(mesh);
+            editor.objects.push({ type: o.type, mesh, data: o });
+            editor.dragControls.objects.push(mesh);
           });
+
           m.data.spawns?.forEach(s => {
             const color = s.team === 't' ? 0xff0000 : 0x0000ff;
-            const marker = new THREE.Mesh(new THREE.SphereGeometry(0.5), new THREE.MeshBasicMaterial({color}));
-            marker.position.set(s.x,s.y,s.z); marker.userData = { editorType:'spawn', editorIndex: editor.spawns.length, team: s.team };
-            editor.scene.add(marker); editor.spawns.push({ team:s.team, mesh:marker, data:s });
+            const marker = new THREE.Mesh(new THREE.SphereGeometry(0.5,16,16), new THREE.MeshStandardMaterial({color}));
+            marker.position.set(s.x, s.y, s.z);
+            marker.userData = { editorType:'spawn', team: s.team };
+            editor.scene.add(marker);
+            editor.spawns.push({ team: s.team, mesh: marker, data: s });
+            editor.dragControls.objects.push(marker);
           });
+
           if (m.data.bombSite) {
-            const marker = new THREE.Mesh(new THREE.BoxGeometry(1,0.2,1), new THREE.MeshBasicMaterial({color:0xffff00}));
+            const marker = new THREE.Mesh(new THREE.BoxGeometry(1,0.2,1), new THREE.MeshStandardMaterial({color:0xffff00}));
             marker.position.set(m.data.bombSite.x, m.data.bombSite.y, m.data.bombSite.z);
-            marker.userData = { editorType:'bomb' }; editor.scene.add(marker);
-            editor.bombSite = { mesh:marker, data:m.data.bombSite };
+            marker.userData = { editorType:'bomb' };
+            editor.scene.add(marker);
+            editor.bombSite = { mesh: marker, data: m.data.bombSite };
+            editor.dragControls.objects.push(marker);
           }
         });
       });
     }
-    function openEditor() { showScreen('editor'); if (!editor.renderer) initEditor(); }
-    function closeEditor() { showMenu(); }
+
+    function openEditor() {
+      showScreen('editor');
+      if (!editor.renderer) initEditor();
+    }
+
+    function closeEditor() {
+      showMenu();
+    }
 
     // Старт
     if (token) connectWS(); else { showScreen('menu'); authBlock.style.display='block'; }
-    gameLoop();
   </script>
 </body>
 </html>
